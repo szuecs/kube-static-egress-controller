@@ -1,0 +1,14 @@
+package: github.com/szuecs/k8s-client-go-test
+import:
+- package: github.com/sirupsen/logrus
+
+- package: k8s.io/apimachinery
+  subpackages:
+  - pkg/apis/meta/v1
+- package: k8s.io/client-go
+  version: ~4.0.0
+  subpackages:
+  - kubernetes
+  - pkg/api/v1
+  - pkg/apis/extensions/v1beta1
+  - tools/clientcmd
