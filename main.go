@@ -35,7 +35,7 @@ var defaultConfig = &Config{
 	DryRun:     false,
 	LogFormat:  "text",
 	LogLevel:   log.InfoLevel.String(),
-	Provider:   "inmemory",
+	Provider:   "noop",
 }
 
 func NewConfig() *Config {
@@ -57,7 +57,7 @@ func (cfg *Config) ParseFlags(args []string) error {
 	// Flags related to Kubernetes
 	app.Flag("master", "The Kubernetes API server to connect to (default: auto-detect)").Default(defaultConfig.Master).StringVar(&cfg.Master)
 	app.Flag("kubeconfig", "Retrieve target cluster configuration from a Kubernetes configuration file (default: auto-detect)").Default(defaultConfig.KubeConfig).StringVar(&cfg.KubeConfig)
-	app.Flag("provider", "Provider implementing static egress <inmemory|aws> (default: auto-detect)").Default(defaultConfig.Provider).StringVar(&cfg.Provider)
+	app.Flag("provider", "Provider implementing static egress <noop|aws> (default: auto-detect)").Default(defaultConfig.Provider).StringVar(&cfg.Provider)
 	app.Flag("dry-run", "When enabled, prints changes rather than actually performing them (default: disabled)").BoolVar(&cfg.DryRun)
 	app.Flag("log-level", "Set the level of logging. (default: info, options: panic, debug, info, warn, error, fatal").Default(defaultConfig.LogLevel).EnumVar(&cfg.LogLevel, allLogLevelsAsStrings()...)
 	_, err := app.Parse(args)
