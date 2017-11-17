@@ -23,23 +23,6 @@ const (
 	parameterAZ3RouteTableIDParameter   = "AZ3RouteTableIDParameter"
 )
 
-var parameterAZRouteTableIDParameter = []string{
-	"AZ1RouteTableIDParameter",
-	"AZ2RouteTableIDParameter",
-	"AZ3RouteTableIDParameter",
-}
-
-type stackSpec struct {
-	name              string
-	vpcID             string
-	internetGatewayID string
-	routeTableIDAZ1   string
-	routeTableIDAZ2   string
-	routeTableIDAZ3   string
-	timeoutInMinutes  uint
-	template          string
-}
-
 type AwsProvider struct {
 	dry               bool
 	natCidrBlocks     []string
@@ -63,6 +46,23 @@ func (p AwsProvider) String() string {
 
 func (p *AwsProvider) Execute(nets []string) error {
 	return nil
+}
+
+var parameterAZRouteTableIDParameter = []string{
+	"AZ1RouteTableIDParameter",
+	"AZ2RouteTableIDParameter",
+	"AZ3RouteTableIDParameter",
+}
+
+type stackSpec struct {
+	name              string
+	vpcID             string
+	internetGatewayID string
+	routeTableIDAZ1   string
+	routeTableIDAZ2   string
+	routeTableIDAZ3   string
+	timeoutInMinutes  uint
+	template          string
 }
 
 func (p *AwsProvider) generateTemplate(nets []string) string {
