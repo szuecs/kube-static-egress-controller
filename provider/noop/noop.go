@@ -1,5 +1,7 @@
 package noop
 
+import "github.com/sirupsen/logrus"
+
 const ProviderName = "noop"
 
 type NoopProvider struct{}
@@ -13,5 +15,6 @@ func (p NoopProvider) String() string {
 }
 
 func (p *NoopProvider) Execute(nets []string) error {
+	logrus.Infof("%s Execute(%v)", ProviderName, nets)
 	return nil
 }

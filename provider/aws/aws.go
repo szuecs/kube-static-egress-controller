@@ -14,8 +14,7 @@ import (
 )
 
 const (
-	ProviderName = "AWS"
-
+	ProviderName                        = "AWS"
 	stackName                           = "egress-static-nat"
 	parameterVPCIDParameter             = "VPCIDParameter"
 	parameterInternetGatewayIDParameter = "InternetGatewayIDParameter"
@@ -30,12 +29,6 @@ var parameterAZRouteTableIDParameter = []string{
 	"AZ3RouteTableIDParameter",
 }
 
-type AwsProvider struct {
-	natCidrBlocks     []string
-	availabilityZones []string
-	cloudformation    cloudformationiface.CloudFormationAPI
-}
-
 type stackSpec struct {
 	name              string
 	vpcID             string
@@ -47,9 +40,17 @@ type stackSpec struct {
 	template          string
 }
 
-func NewAwsProvider(natCidrBlocks, availabilityZones []string) *AwsProvider {
+type AwsProvider struct {
+	dry               bool
+	natCidrBlocks     []string
+	availabilityZones []string
+	cloudformation    cloudformationiface.CloudFormationAPI
+}
+
+func NewAwsProvider(dry bool, natCidrBlocks, availabilityZones []string) *AwsProvider {
 	p := defaultConfigProvider()
 	return &AwsProvider{
+		dry:               dry,
 		natCidrBlocks:     natCidrBlocks,
 		availabilityZones: availabilityZones,
 		cloudformation:    cloudformation.New(p),

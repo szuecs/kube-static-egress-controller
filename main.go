@@ -9,10 +9,10 @@ import (
 
 	log "github.com/sirupsen/logrus"
 	"github.com/szuecs/kube-static-egress-controller/kube"
+	provider "github.com/szuecs/kube-static-egress-controller/provider"
 	kingpin "gopkg.in/alecthomas/kingpin.v2"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/kops/protokube/pkg/gossip/dns/provider"
 )
 
 var (
@@ -27,6 +27,10 @@ type Config struct {
 	LogFormat  string
 	LogLevel   string
 	Provider   string
+	// required by AWS provider
+	NatCidrBlocks []string
+	// required by AWS provider
+	AvailabilityZones []string
 }
 
 var defaultConfig = &Config{
@@ -58,6 +62,8 @@ func (cfg *Config) ParseFlags(args []string) error {
 	app.Flag("master", "The Kubernetes API server to connect to (default: auto-detect)").Default(defaultConfig.Master).StringVar(&cfg.Master)
 	app.Flag("kubeconfig", "Retrieve target cluster configuration from a Kubernetes configuration file (default: auto-detect)").Default(defaultConfig.KubeConfig).StringVar(&cfg.KubeConfig)
 	app.Flag("provider", "Provider implementing static egress <noop|aws> (default: auto-detect)").Default(defaultConfig.Provider).StringVar(&cfg.Provider)
+	app.Flag("aws-nat-cidr-blocks", "AWS Provider requires to specify NAT-CIDR-Blocks for each AZ to have a NAT gateway in. Each should be a small network having only the NAT GW").StringsVar(&cfg.NatCidrBlocks)
+	app.Flag("aws-azs", "AWS Provider requires to specify all AZs to have a NAT gateway in.").StringsVar(&cfg.AvailabilityZones)
 	app.Flag("dry-run", "When enabled, prints changes rather than actually performing them (default: disabled)").BoolVar(&cfg.DryRun)
 	app.Flag("log-level", "Set the level of logging. (default: info, options: panic, debug, info, warn, error, fatal").Default(defaultConfig.LogLevel).EnumVar(&cfg.LogLevel, allLogLevelsAsStrings()...)
 	_, err := app.Parse(args)
@@ -86,17 +92,15 @@ func main() {
 		log.Fatalf("failed to parse log level: %v", err)
 	}
 	log.SetLevel(ll)
-
-	log.Printf("CFG: %+v", cfg) //TODO(sszuecs): drop it
+	log.Debugf("config: %+v", cfg)
 
 	config, err := clientcmd.BuildConfigFromFlags(cfg.Master, cfg.KubeConfig)
 	if err != nil {
 		log.Fatalf("Failed to create config: %v", err)
 	}
 
-	var natCidrBlocks, availabilityZones []string // TODO(sszuecs): flags
-	p := provider.New(cfg.Provider, natCidrBlocks, availabilityZones)
-	run(config, cfg.DryRun)
+	p := provider.NewProvider(cfg.DryRun, cfg.Provider, cfg.NatCidrBlocks, cfg.AvailabilityZones)
+	run(config, cfg.DryRun, p)
 }
 
 func run(config *restclient.Config, dry bool) {

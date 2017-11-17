@@ -11,10 +11,10 @@ type Provider interface {
 	String() string
 }
 
-func NewProvider(name string, natCidrBlocks, availabilityZones []string) Provider {
+func NewProvider(dry bool, name string, natCidrBlocks, availabilityZones []string) Provider {
 	switch name {
 	case aws.ProviderName:
-		return aws.NewAwsProvider(natCidrBlocks, availabilityZones)
+		return aws.NewAwsProvider(dry, natCidrBlocks, availabilityZones)
 	case noop.ProviderName:
 		return noop.NewNoopProvider()
 	default:
