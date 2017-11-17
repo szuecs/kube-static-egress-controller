@@ -9,16 +9,42 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/cloudformation"
 	"github.com/aws/aws-sdk-go/service/cloudformation/cloudformationiface"
-	cf "github.com/crewjam/go-cloudformation"
+	cft "github.com/crewjam/go-cloudformation"
 	"github.com/linki/instrumented_http"
 )
 
-const ProviderName = "AWS"
+const (
+	ProviderName = "AWS"
+
+	stackName                           = "egress-static-nat"
+	parameterVPCIDParameter             = "VPCIDParameter"
+	parameterInternetGatewayIDParameter = "InternetGatewayIDParameter"
+	parameterAZ1RouteTableIDParameter   = "AZ1RouteTableIDParameter"
+	parameterAZ2RouteTableIDParameter   = "AZ2RouteTableIDParameter"
+	parameterAZ3RouteTableIDParameter   = "AZ3RouteTableIDParameter"
+)
+
+var parameterAZRouteTableIDParameter = []string{
+	"AZ1RouteTableIDParameter",
+	"AZ2RouteTableIDParameter",
+	"AZ3RouteTableIDParameter",
+}
 
 type AwsProvider struct {
 	natCidrBlocks     []string
 	availabilityZones []string
 	cloudformation    cloudformationiface.CloudFormationAPI
+}
+
+type stackSpec struct {
+	name              string
+	vpcID             string
+	internetGatewayID string
+	routeTableIDAZ1   string
+	routeTableIDAZ2   string
+	routeTableIDAZ3   string
+	timeoutInMinutes  uint
+	template          string
 }
 
 func NewAwsProvider(natCidrBlocks, availabilityZones []string) *AwsProvider {
@@ -38,95 +64,92 @@ func (p *AwsProvider) Execute(nets []string) error {
 	return nil
 }
 
-func generateTemplate() {
-	natCidrBlocks := []string{"172.31.64.0/28", "172.31.64.16/28", "172.31.64.32/28"}
-	availabilityZones := []string{"eu-central-1a", "eu-central-1b", "eu-central-1c"}
-	destinationCidrBlocks := []string{"188.113.88.193/32", "8.8.8.8.8/32", "10.0.0.0/16"}
+func (p *AwsProvider) generateTemplate(nets []string) string {
+	//natCidrBlocks := []string{"172.31.64.0/28", "172.31.64.16/28", "172.31.64.32/28"}
+	//availabilityZones := []string{"eu-central-1a", "eu-central-1b", "eu-central-1c"}
+	//destinationCidrBlocks := []string{"188.113.88.193/32", "8.8.8.8.8/32", "10.0.0.0/16"}
 
-	template := cf.NewTemplate()
-	template.Parameters["VPCIDParameter"] = &cf.Parameter{
+	template := cft.NewTemplate()
+	template.Parameters["VPCIDParameter"] = &cft.Parameter{
 		Description: "VPC ID",
 		Type:        "AWS::EC2::VPC::Id",
 	}
-	template.Parameters["InternetGatewayIDParameter"] = &cf.Parameter{
+	template.Parameters["InternetGatewayIDParameter"] = &cft.Parameter{
 		Description: "Internet Gateway ID",
 		Type:        "String",
 	}
-	template.Parameters["AZ1RouteTableIDParameter"] = &cf.Parameter{
+	template.Parameters["AZ1RouteTableIDParameter"] = &cft.Parameter{
 		Description: "Route Table ID Availability Zone 1",
 		Type:        "String",
 	}
-	template.Parameters["AZ2RouteTableIDParameter"] = &cf.Parameter{
+	template.Parameters["AZ2RouteTableIDParameter"] = &cft.Parameter{
 		Description: "Route Table ID Availability Zone 2",
 		Type:        "String",
 	}
-	template.Parameters["AZ3RouteTableIDParameter"] = &cf.Parameter{
+	template.Parameters["AZ3RouteTableIDParameter"] = &cft.Parameter{
 		Description: "Route Table ID Availability Zone 3",
 		Type:        "String",
 	}
 
-	for i, destinationCidrBlock := range destinationCidrBlocks {
-		template.Parameters[fmt.Sprintf("DestinationCidrBlock%d", i+1)] = &cf.Parameter{
+	for i, net := range nets {
+		template.Parameters[fmt.Sprintf("DestinationCidrBlock%d", i+1)] = &cft.Parameter{
 			Description: fmt.Sprintf("Destination CIDR Block %d", i+1),
 			Type:        "String",
-			Default:     destinationCidrBlock,
+			Default:     net,
 		}
 	}
 
-	for i := 1; i <= len(availabilityZones); i++ {
-		template.AddResource(fmt.Sprintf("NATGateway%d", i), &cf.EC2NatGateway{
-			SubnetId: cf.Ref(
+	for i := 1; i <= len(p.availabilityZones); i++ {
+		template.AddResource(fmt.Sprintf("NATGateway%d", i), &cft.EC2NatGateway{
+			SubnetId: cft.Ref(
 				fmt.Sprintf("NATSubnet%d", i)).String(),
-			AllocationId: cf.GetAtt(
+			AllocationId: cft.GetAtt(
 				fmt.Sprintf("EIP%d", i), "AllocationId"),
 		})
-		template.AddResource(fmt.Sprintf("EIP%d", i), &cf.EC2EIP{
-			Domain: cf.String("vpc"),
+		template.AddResource(fmt.Sprintf("EIP%d", i), &cft.EC2EIP{
+			Domain: cft.String("vpc"),
 		})
-		template.AddResource(fmt.Sprintf("NATSubnet%d", i), &cf.EC2Subnet{
-			CidrBlock:        cf.String(natCidrBlocks[i-1]),
-			AvailabilityZone: cf.String(availabilityZones[i-1]),
-			VpcId:            cf.Ref("VPCIDParameter").String(),
-			Tags: []cf.ResourceTag{
-				cf.ResourceTag{
-					Key: cf.String("Name"),
-					Value: cf.String(
-						fmt.Sprintf("nat-%s", availabilityZones[i-1])),
+		template.AddResource(fmt.Sprintf("NATSubnet%d", i), &cft.EC2Subnet{
+			CidrBlock:        cft.String(p.natCidrBlocks[i-1]),
+			AvailabilityZone: cft.String(p.availabilityZones[i-1]),
+			VpcId:            cft.Ref("VPCIDParameter").String(),
+			Tags: []cft.ResourceTag{
+				cft.ResourceTag{
+					Key: cft.String("Name"),
+					Value: cft.String(
+						fmt.Sprintf("nat-%s", p.availabilityZones[i-1])),
 				},
 			},
 		})
-		template.AddResource(fmt.Sprintf("NATSubnetRoute%d", i), &cf.EC2Route{
-			RouteTableId: cf.Ref(
+		template.AddResource(fmt.Sprintf("NATSubnetRoute%d", i), &cft.EC2Route{
+			RouteTableId: cft.Ref(
 				fmt.Sprintf("NATSubnetRouteTable%d", i)).String(),
-			DestinationCidrBlock: cf.String("0.0.0.0/0"),
-			GatewayId:            cf.Ref("InternetGatewayIDParameter").String(),
+			DestinationCidrBlock: cft.String("0.0.0.0/0"),
+			GatewayId:            cft.Ref("InternetGatewayIDParameter").String(),
 		})
-		template.AddResource(fmt.Sprintf("NATSubnetRouteTableAssociation%d", i), &cf.EC2SubnetRouteTableAssociation{
-			RouteTableId: cf.Ref(
+		template.AddResource(fmt.Sprintf("NATSubnetRouteTableAssociation%d", i), &cft.EC2SubnetRouteTableAssociation{
+			RouteTableId: cft.Ref(
 				fmt.Sprintf("NATSubnetRouteTable%d", i)).String(),
-			SubnetId: cf.Ref(
+			SubnetId: cft.Ref(
 				fmt.Sprintf("NATSubnet%d", i)).String(),
 		})
-		template.AddResource(fmt.Sprintf("NATSubnetRouteTable%d", i), &cf.EC2RouteTable{
-			VpcId: cf.Ref("VPCIDParameter").String(),
+		template.AddResource(fmt.Sprintf("NATSubnetRouteTable%d", i), &cft.EC2RouteTable{
+			VpcId: cft.Ref("VPCIDParameter").String(),
 		})
-		for j := range destinationCidrBlocks {
-			template.AddResource(fmt.Sprintf("RouteToNAT%d", j+1), &cf.EC2Route{
-				RouteTableId: cf.Ref(
+		for j := range nets {
+			template.AddResource(fmt.Sprintf("RouteToNAT%d", j+1), &cft.EC2Route{
+				RouteTableId: cft.Ref(
 					fmt.Sprintf("AZ%dRouteTableIDParameter", i)).String(),
-				DestinationCidrBlock: cf.Ref(
+				DestinationCidrBlock: cft.Ref(
 					fmt.Sprintf("DestinationCidrBlock%d", j+1)).String(),
-				NatGatewayId: cf.Ref(
+				NatGatewayId: cft.Ref(
 					fmt.Sprintf("NATGateway%d", i)).String(),
 			})
 		}
 	}
 	stack, _ := json.Marshal(template)
-	p := new(AwsProvider)
-	p.createCFStack(string(stack))
+	return string(stack)
 }
-
-const stackName = "egress-static-nat"
 
 func (p *AwsProvider) deleteCFStack() error {
 	params := &cloudformation.DeleteStackInput{StackName: aws.String(stackName)}
@@ -134,28 +157,18 @@ func (p *AwsProvider) deleteCFStack() error {
 	return err
 }
 
-func (p *AwsProvider) updateCFStack() error {
-	template := templateYAML
-	if spec.customTemplate != "" {
-		template = spec.customTemplate
-	}
+func (p *AwsProvider) updateCFStack(nets []string, spec *stackSpec) (string, error) {
 	params := &cloudformation.UpdateStackInput{
-		StackName: aws.String(spec.name),
+		StackName: aws.String(stackName),
 		Parameters: []*cloudformation.Parameter{
 			cfParam(parameterVPCIDParameter, spec.vpcID),
 			cfParam(parameterInternetGatewayIDParameter, spec.internetGatewayID),
-			cfParam(parameterAZ1RouteTableIDParameter, spec.routeTableIDAZ1),
-			cfParam(parameterAZ2RouteTableIDParameter, spec.routeTableIDAZ2),
-			cfParam(parameterAZ3RouteTableIDParameter, spec.routeTableIDAZ3),
 		},
-		Tags: []*cloudformation.Tag{
-			cfTag(kubernetesCreatorTag, kubernetesCreatorValue),
-			cfTag(clusterIDTagPrefix+spec.clusterID, resourceLifecycleOwned),
-		},
-		TemplateBody: aws.String(template),
+		TemplateBody: aws.String(p.generateTemplate(nets)),
 	}
-	if spec.certificateARN != "" {
-		params.Tags = append(params.Tags, cfTag(certificateARNTag, spec.certificateARN))
+	for i := range p.availabilityZones {
+		params.Parameters = append(params.Parameters,
+			cfParam(parameterAZRouteTableIDParameter[i], spec.routeTableIDAZ1))
 	}
 	resp, err := p.cloudformation.UpdateStack(params)
 	if err != nil {
@@ -164,39 +177,23 @@ func (p *AwsProvider) updateCFStack() error {
 
 	return aws.StringValue(resp.StackId), nil
 }
-func (p *AwsProvider) createCFStack(stack string) error {
-	stackSpec := &cloudformation.CreateStackInput{
-		StackName:        aws.String(stackName),
-		TimeoutInMinutes: aws.Int64(5),
-		TemplateBody:     aws.String(stack),
-	}
-	//cfg := defaultConfigProvider()
-	//c := cloudformation.New(cfg)
-	fmt.Println(stackSpec)
-	//c.CreateStack(stackSpec)
-	return nil
-	template := templateYAML
-	if spec.customTemplate != "" {
-		template = spec.customTemplate
-	}
+
+func (p *AwsProvider) createCFStack(nets []string, spec *stackSpec) (string, error) {
 	params := &cloudformation.CreateStackInput{
 		StackName: aws.String(spec.name),
 		OnFailure: aws.String(cloudformation.OnFailureDelete),
 		Parameters: []*cloudformation.Parameter{
 			cfParam(parameterVPCIDParameter, spec.vpcID),
 			cfParam(parameterInternetGatewayIDParameter, spec.internetGatewayID),
-			cfParam(parameterAZ1RouteTableIDParameter, spec.routeTableIDAZ1),
-			cfParam(parameterAZ2RouteTableIDParameter, spec.routeTableIDAZ2),
-			cfParam(parameterAZ3RouteTableIDParameter, spec.routeTableIDAZ3),
 		},
-		Tags: []*cloudformation.Tag{
-			cfTag(kubernetesCreatorTag, kubernetesCreatorValue),
-			cfTag(clusterIDTag, spec.clusterID),
-		},
-		TemplateBody:     aws.String(template),
+		TemplateBody:     aws.String(spec.template),
 		TimeoutInMinutes: aws.Int64(int64(spec.timeoutInMinutes)),
 	}
-	resp, err := svc.CreateStack(params)
+	for i := range p.availabilityZones {
+		params.Parameters = append(params.Parameters,
+			cfParam(parameterAZRouteTableIDParameter[i], spec.routeTableIDAZ1))
+	}
+	resp, err := p.cloudformation.CreateStack(params)
 	if err != nil {
 		return spec.name, err
 	}
@@ -212,4 +209,11 @@ func defaultConfigProvider() client.ConfigProvider {
 		Config:            *cfg,
 	}
 	return session.Must(session.NewSessionWithOptions(opts))
+}
+
+func cfParam(key, value string) *cloudformation.Parameter {
+	return &cloudformation.Parameter{
+		ParameterKey:   aws.String(key),
+		ParameterValue: aws.String(value),
+	}
 }
