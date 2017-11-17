@@ -1,4 +1,4 @@
-package: github.com/szuecs/k8s-client-go-test
+package: github.com/szuecs/kube-static-egress-controller
 import:
 - package: github.com/sirupsen/logrus
 - package: github.com/crewjam/go-cloudformation
@@ -12,3 +12,7 @@ import:
   - pkg/api/v1
   - pkg/apis/extensions/v1beta1
   - tools/clientcmd
+- package: github.com/aws/aws-sdk-go
+  version: ^1.12.29
+  subpackages:
+  - service/cloudformation
