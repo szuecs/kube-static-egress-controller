@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/signal"
 	"sync"
@@ -15,9 +16,15 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+const (
+	name = "kube-static-egress-controller"
+)
+
 var (
 	// set at link time
-	version = "unknown"
+	version    = "unknown"
+	buildstamp = "unknown"
+	githash    = "unknown"
 )
 
 type Config struct {
@@ -54,16 +61,27 @@ func allLogLevelsAsStrings() []string {
 	return levels
 }
 func (cfg *Config) ParseFlags(args []string) error {
-	app := kingpin.New("kube-static-egress-controller", "TODO")
-	app.Version(version)
+	app := kingpin.New(name, fmt.Sprintf(`%s
+watches for Kubernetes Configmaps that
+are having the label egress=static.  It will read all data entries and
+try to use values as CIDR network targets.  These target networks will
+be routed through a static pool of IPs, such that the destination can
+be sure, your requests to these destination will be served from a
+small list of IPs.
+
+Example:
+
+    %s --provider=aws --aws-nat-cidr-block="172.31.64.0/28" --aws-nat-cidr-block=172.31.64.16/28 --aws-nat-cidr-block=172.31.64.32/28 --aws-az=eu-central-1a --aws-az=eu-central-1b --aws-az=eu-central-1c --dry-run
+`, name, name))
+	app.Version(version + "\nbuild time: " + buildstamp + "\nGit ref: " + githash)
 	app.DefaultEnvars()
 
 	// Flags related to Kubernetes
 	app.Flag("master", "The Kubernetes API server to connect to (default: auto-detect)").Default(defaultConfig.Master).StringVar(&cfg.Master)
 	app.Flag("kubeconfig", "Retrieve target cluster configuration from a Kubernetes configuration file (default: auto-detect)").Default(defaultConfig.KubeConfig).StringVar(&cfg.KubeConfig)
 	app.Flag("provider", "Provider implementing static egress <noop|aws> (default: auto-detect)").Default(defaultConfig.Provider).StringVar(&cfg.Provider)
-	app.Flag("aws-nat-cidr-blocks", "AWS Provider requires to specify NAT-CIDR-Blocks for each AZ to have a NAT gateway in. Each should be a small network having only the NAT GW").StringsVar(&cfg.NatCidrBlocks)
-	app.Flag("aws-azs", "AWS Provider requires to specify all AZs to have a NAT gateway in.").StringsVar(&cfg.AvailabilityZones)
+	app.Flag("aws-nat-cidr-block", "AWS Provider requires to specify NAT-CIDR-Blocks for each AZ to have a NAT gateway in. Each should be a small network having only the NAT GW").StringsVar(&cfg.NatCidrBlocks)
+	app.Flag("aws-az", "AWS Provider requires to specify all AZs to have a NAT gateway in.").StringsVar(&cfg.AvailabilityZones)
 	app.Flag("dry-run", "When enabled, prints changes rather than actually performing them (default: disabled)").BoolVar(&cfg.DryRun)
 	app.Flag("log-level", "Set the level of logging. (default: info, options: panic, debug, info, warn, error, fatal").Default(defaultConfig.LogLevel).EnumVar(&cfg.LogLevel, allLogLevelsAsStrings()...)
 	_, err := app.Parse(args)
@@ -78,18 +96,18 @@ func main() {
 	cfg := NewConfig()
 	err := cfg.ParseFlags(os.Args[1:])
 	if err != nil {
-		log.Fatalf("flag parsing error: %v", err)
+		log.Fatalf("Flag parsing error: %v", err)
 	}
 	if cfg.LogFormat == "json" {
 		log.SetFormatter(&log.JSONFormatter{})
 	}
 	if cfg.DryRun {
-		log.Info("running in dry-run mode. No changes to DNS records will be made.")
+		log.Info("Running in dry-run mode. No changes will be made.")
 	}
 
 	ll, err := log.ParseLevel(cfg.LogLevel)
 	if err != nil {
-		log.Fatalf("failed to parse log level: %v", err)
+		log.Fatalf("Failed to parse log level: %v", err)
 	}
 	log.SetLevel(ll)
 	log.Debugf("config: %+v", cfg)
@@ -100,10 +118,10 @@ func main() {
 	}
 
 	p := provider.NewProvider(cfg.DryRun, cfg.Provider, cfg.NatCidrBlocks, cfg.AvailabilityZones)
-	run(config, cfg.DryRun, p)
+	run(config, p)
 }
 
-func run(config *restclient.Config, dry bool) {
+func run(config *restclient.Config, p provider.Provider) {
 	quitCH := make(chan struct{})
 	var wg sync.WaitGroup
 
@@ -141,9 +159,9 @@ func run(config *restclient.Config, dry bool) {
 	}(watchCH)
 
 	// merger
-	cfCH := make(chan []string)
+	providerCH := make(chan []string)
 	wg.Add(1)
-	go func(ch <-chan map[string][]string, cfCH chan<- []string, quitCH <-chan struct{}) {
+	go func(ch <-chan map[string][]string, providerCH chan<- []string, quitCH <-chan struct{}) {
 		defer wg.Done()
 		log.Debugln("Merger: start")
 		result := make(map[string][]string, 0)
@@ -156,7 +174,7 @@ func run(config *restclient.Config, dry bool) {
 				}
 
 			case <-time.After(5 * time.Second):
-				log.Infof("Merger: current state: %v", result)
+				log.Debugf("Merger: current state: %v", result)
 				res := make([]string, 0)
 				uniquer := map[string]bool{}
 				for _, v := range result {
@@ -167,32 +185,34 @@ func run(config *restclient.Config, dry bool) {
 						}
 					}
 				}
-				cfCH <- res
+				providerCH <- res
 			case <-quitCH:
 				log.Infoln("Merger: got quit signal")
 				return
 			}
 		}
-	}(watchCH, cfCH, quitCH)
+	}(watchCH, providerCH, quitCH)
 
-	// CF
+	// Provider
 	wg.Add(1)
-	go func(cfCH <-chan []string, quitCH <-chan struct{}) {
+	go func(providerCH <-chan []string, quitCH <-chan struct{}) {
 		defer wg.Done()
 		for {
 			select {
-			case a := <-cfCH:
+			case a := <-providerCH:
 				// TODO(sszuecs): parse and valid check CIDR
-				log.Infof("CF: got: %v", a)
-				if !dry {
-					log.Debugln("CF: execute")
+				log.Infof("Provider: got targets: %v", a)
+				err := p.Execute(a)
+				if err != nil {
+					log.Errorf("Failed to execute provider(%s): %v", p, a)
 				}
+
 			case <-quitCH:
-				log.Infoln("CF: got quit signal")
+				log.Infoln("Provider: got quit signal")
 				return
 			}
 		}
-	}(cfCH, quitCH)
+	}(providerCH, quitCH)
 
 	// quit
 	sigs := make(chan os.Signal, 1)

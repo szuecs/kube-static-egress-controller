@@ -11,10 +11,11 @@ import (
 	"github.com/aws/aws-sdk-go/service/cloudformation/cloudformationiface"
 	cft "github.com/crewjam/go-cloudformation"
 	"github.com/linki/instrumented_http"
+	"github.com/sirupsen/logrus"
 )
 
 const (
-	ProviderName                        = "AWS"
+	ProviderName                        = "aws"
 	stackName                           = "egress-static-nat"
 	parameterVPCIDParameter             = "VPCIDParameter"
 	parameterInternetGatewayIDParameter = "InternetGatewayIDParameter"
@@ -45,6 +46,7 @@ func (p AwsProvider) String() string {
 }
 
 func (p *AwsProvider) Execute(nets []string) error {
+	logrus.Infof("%s Execute(%v)", ProviderName, nets)
 	return nil
 }
 
@@ -66,10 +68,6 @@ type stackSpec struct {
 }
 
 func (p *AwsProvider) generateTemplate(nets []string) string {
-	//natCidrBlocks := []string{"172.31.64.0/28", "172.31.64.16/28", "172.31.64.32/28"}
-	//availabilityZones := []string{"eu-central-1a", "eu-central-1b", "eu-central-1c"}
-	//destinationCidrBlocks := []string{"188.113.88.193/32", "8.8.8.8.8/32", "10.0.0.0/16"}
-
 	template := cft.NewTemplate()
 	template.Parameters["VPCIDParameter"] = &cft.Parameter{
 		Description: "VPC ID",
