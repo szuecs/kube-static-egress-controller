@@ -7,7 +7,8 @@ import (
 )
 
 type Provider interface {
-	Execute([]string) error
+	Upsert([]string) error
+	Delete() error
 	String() string
 }
 

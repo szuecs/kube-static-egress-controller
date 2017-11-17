@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/cloudformation/cloudformationiface"
 	cft "github.com/crewjam/go-cloudformation"
 	"github.com/linki/instrumented_http"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -45,8 +45,32 @@ func (p AwsProvider) String() string {
 	return ProviderName
 }
 
-func (p *AwsProvider) Execute(nets []string) error {
-	logrus.Infof("%s Execute(%v)", ProviderName, nets)
+func (p *AwsProvider) Upsert(nets []string) error {
+	log.Infof("%s Upsert(%v)", ProviderName, nets)
+	if !p.dry {
+		spec := &stackSpec{
+			template: p.generateTemplate(nets),
+		}
+		stackID, err := p.createCFStack(nets, spec)
+		if err != nil {
+			return fmt.Errorf("Failed to create CF stack: %v", err)
+		}
+		log.Infof("%s: Created CF Stack %s", p, stackID)
+
+		stackID, err = p.updateCFStack(nets, spec)
+		if err != nil {
+			return fmt.Errorf("Failed to update CF stack: %v", err)
+		}
+		log.Infof("%s: Updated CF Stack %s", p, stackID)
+	}
+	return nil
+}
+
+func (p *AwsProvider) Delete() error {
+	log.Infof("%s Delete()", ProviderName)
+	if !p.dry {
+		p.deleteCFStack()
+	}
 	return nil
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"sync"
@@ -199,16 +200,33 @@ func run(config *restclient.Config, p provider.Provider) {
 		defer wg.Done()
 		for {
 			select {
-			case a := <-providerCH:
-				// TODO(sszuecs): parse and valid check CIDR
-				log.Infof("Provider: got targets: %v", a)
-				err := p.Execute(a)
+			case input := <-providerCH:
+				output := make([]string, len(input))
+				for s := range input {
+					_, _, err := net.ParseCIDR(s)
+					if err != nil {
+						log.Warningf("Provider(%s): skipping not parseable CIDR: %s, err: %v", p, s, err)
+						continue
+					}
+					output = append(output, s)
+				}
+
+				var err error
+				if len(input) == 0 {
+					log.Infof("Provider(%s): no targets -> delete", p)
+					err = p.Delete()
+				} else if len(output) > 0 {
+					log.Infof("Provider(%s): got %d targets", p, len(output))
+					err = p.Upsert(output)
+				} else {
+					log.Infof("Provider(%s): got no targets could be a failure -> do nothing", p)
+				}
 				if err != nil {
-					log.Errorf("Failed to execute provider(%s): %v", p, a)
+					log.Errorf("Provider(%s): Failed to execute with %d targets: %v", p, len(output), output)
 				}
 
 			case <-quitCH:
-				log.Infoln("Provider: got quit signal")
+				log.Infof("Provider(%s): got quit signal", p)
 				return
 			}
 		}

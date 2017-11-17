@@ -14,7 +14,12 @@ func (p NoopProvider) String() string {
 	return ProviderName
 }
 
-func (p *NoopProvider) Execute(nets []string) error {
-	logrus.Infof("%s Execute(%v)", ProviderName, nets)
+func (p *NoopProvider) Upsert(nets []string) error {
+	logrus.Infof("%s Upsert(%v)", ProviderName, nets)
+	return nil
+}
+
+func (p *NoopProvider) Delete() error {
+	logrus.Infof("%s Delete()", ProviderName)
 	return nil
 }
