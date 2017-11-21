@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
 	cft "github.com/crewjam/go-cloudformation"
 	"github.com/linki/instrumented_http"
- 	log "github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -21,7 +21,7 @@ const (
 	stackName                           = "egress-static-nat"
 	parameterVPCIDParameter             = "VPCIDParameter"
 	parameterInternetGatewayIDParameter = "InternetGatewayIDParameter"
-  tagDefaultKeyRouteTableId = "AvailabilityZone"
+	tagDefaultKeyRouteTableId           = "AvailabilityZone"
 )
 
 type AwsProvider struct {
@@ -131,6 +131,7 @@ type stackSpec struct {
 	routeTableIDAZ1   string
 	routeTableIDAZ2   string
 	routeTableIDAZ3   string
+	tableID           map[string]string
 	timeoutInMinutes  uint
 	template          string
 }
