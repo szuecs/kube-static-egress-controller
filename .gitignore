@@ -1,4 +1,5 @@
 vendor
+build
 # Binaries for programs and plugins
 *.exe
 *.dll

@@ -13,16 +13,15 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
 	cft "github.com/crewjam/go-cloudformation"
 	"github.com/linki/instrumented_http"
-	"github.com/prometheus/common/log"
+ 	log "github.com/sirupsen/logrus"
 )
 
 const (
-	tagDefaultKeyRouteTableId = "AvailabilityZone"
-	ProviderName              = "AWS"
-
+	ProviderName                        = "aws"
 	stackName                           = "egress-static-nat"
 	parameterVPCIDParameter             = "VPCIDParameter"
 	parameterInternetGatewayIDParameter = "InternetGatewayIDParameter"
+  tagDefaultKeyRouteTableId = "AvailabilityZone"
 )
 
 type AwsProvider struct {
@@ -102,6 +101,7 @@ func (p *AwsProvider) Upsert(nets []string) error {
 		//log.Infof("%s: Created CF Stack %s", p, stackID)
 
 		stackID, err := p.updateCFStack(nets, spec)
+
 		if err != nil {
 			return fmt.Errorf("Failed to update CF stack: %v", err)
 		}
@@ -118,11 +118,19 @@ func (p *AwsProvider) Delete() error {
 	return nil
 }
 
+var parameterAZRouteTableIDParameter = []string{
+	"AZ1RouteTableIDParameter",
+	"AZ2RouteTableIDParameter",
+	"AZ3RouteTableIDParameter",
+}
+
 type stackSpec struct {
 	name              string
 	vpcID             string
 	internetGatewayID string
-	tableID           map[string]string
+	routeTableIDAZ1   string
+	routeTableIDAZ2   string
+	routeTableIDAZ3   string
 	timeoutInMinutes  uint
 	template          string
 }
