@@ -202,13 +202,13 @@ func run(config *restclient.Config, p provider.Provider) {
 			select {
 			case input := <-providerCH:
 				output := make([]string, len(input))
-				for s := range input {
-					_, _, err := net.ParseCIDR(s)
+				for _, s := range input {
+					_, ipnet, err := net.ParseCIDR(s)
 					if err != nil {
 						log.Warningf("Provider(%s): skipping not parseable CIDR: %s, err: %v", p, s, err)
 						continue
 					}
-					output = append(output, s)
+					output = append(output, ipnet.String())
 				}
 
 				var err error
