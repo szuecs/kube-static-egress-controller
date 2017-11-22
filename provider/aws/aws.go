@@ -113,7 +113,7 @@ func (p *AwsProvider) Create(nets []string) error {
 }
 
 func (p *AwsProvider) Update(nets []string) error {
-	log.Infof("%s: Upsert(%v)", p, nets)
+	log.Infof("%s: Update(%v)", p, nets)
 	spec, err := p.generateStackSpec(nets)
 	if err != nil {
 		return fmt.Errorf("Failed to generate spec for update: %v", err)
@@ -257,7 +257,7 @@ func (p *AwsProvider) updateCFStack(nets []string, spec *stackSpec) (string, err
 		}
 		return aws.StringValue(resp.StackId), nil
 	}
-	log.Debugf("%s: DRY: Stack to update: %s", p, aws.StringValue(params.TemplateBody))
+	log.Debugf("%s: DRY: Stack to update: %s", p, params)
 	return "DRY stackID", nil
 }
 
@@ -285,7 +285,7 @@ func (p *AwsProvider) createCFStack(nets []string, spec *stackSpec) (string, err
 		}
 		return aws.StringValue(resp.StackId), nil
 	}
-	log.Debugf("%s: DRY: Stack to create: %s", p, aws.StringValue(params.TemplateBody))
+	log.Debugf("%s: DRY: Stack to create: %s", p, params)
 	return "DRY stackID", nil
 
 }
