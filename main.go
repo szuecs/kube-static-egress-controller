@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sort"
 	"sync"
 	"syscall"
 	"time"
@@ -198,10 +199,12 @@ func run(config *restclient.Config, p provider.Provider) {
 	wg.Add(1)
 	go func(providerCH <-chan []string, quitCH <-chan struct{}) {
 		defer wg.Done()
+		bootstrap := true
+		resultCache := make([]string, 0)
 		for {
 			select {
 			case input := <-providerCH:
-				output := make([]string, len(input))
+				output := make([]string, 0)
 				for _, s := range input {
 					_, ipnet, err := net.ParseCIDR(s)
 					if err != nil {
@@ -210,19 +213,41 @@ func run(config *restclient.Config, p provider.Provider) {
 					}
 					output = append(output, ipnet.String())
 				}
+				sort.SliceStable(output, func(i, j int) bool {
+					return output[i] < output[j]
+				})
+
+				if bootstrap {
+					resultCache = output
+					log.Infof("Provider(%s): bootstrapped", p)
+					bootstrap = false
+					continue
+				}
 
 				var err error
-				if len(input) == 0 {
-					log.Infof("Provider(%s): no targets -> delete", p)
-					err = p.Delete()
+				if len(input) == 0 { // not caused by faulty value in CIDR string
+					if !sameValues(resultCache, output) {
+						resultCache = output
+						log.Infof("Provider(%s): no targets -> delete", p)
+						err = p.Delete()
+					} else {
+						log.Debugf("Provider(%s): Delete change was already done", p)
+					}
 				} else if len(output) > 0 {
-					log.Infof("Provider(%s): got %d targets", p, len(output))
-					err = p.Upsert(output)
+					if !sameValues(resultCache, output) {
+						resultCache = output
+						log.Infof("Provider(%s): got %d targets", p, len(output))
+						if len(resultCache) == 0 {
+							err = p.Create(output)
+						} else {
+							err = p.Update(output)
+						}
+					}
 				} else {
 					log.Infof("Provider(%s): got no targets could be a failure -> do nothing", p)
 				}
 				if err != nil {
-					log.Errorf("Provider(%s): Failed to execute with %d targets: %v", p, len(output), output)
+					log.Errorf("Provider(%s): Failed to execute with %d targets (%v): %v", p, len(output), output, err)
 				}
 
 			case <-quitCH:
@@ -243,4 +268,16 @@ func run(config *restclient.Config, p provider.Provider) {
 	}
 	wg.Wait()
 	log.Infoln("shutdown")
+}
+
+func sameValues(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

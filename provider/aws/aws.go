@@ -47,74 +47,89 @@ func (p AwsProvider) String() string {
 	return ProviderName
 }
 
-func (p *AwsProvider) Upsert(nets []string) error {
-	log.Infof("%s Upsert(%v)", ProviderName, nets)
-	if !p.dry {
-		spec := &stackSpec{
-			template:         p.generateTemplate(nets),
-			tableID:          make(map[string]string),
-			timeoutInMinutes: 10,
-		}
-
-		//get VPC
-		vpcs, err := p.getVpcID()
-		fmt.Println(vpcs)
-		if err != nil {
-			return err
-		}
-
-		//get vpc ID from default vpc
-		for _, vpc := range vpcs {
-			if aws.BoolValue(vpc.IsDefault) {
-				spec.vpcID = aws.StringValue(vpc.VpcId)
-			}
-		}
-
-		//get assigned internet gateway
-		igw, err := p.getInternetGatewayId(spec.vpcID)
-		if err != nil {
-			return err
-		}
-
-		//get first internet gateway ID
-		igwID := aws.StringValue(igw[0].InternetGatewayId)
-		spec.internetGatewayID = igwID
-
-		//get route tables
-		rt, err := p.getRouteTables(spec.vpcID)
-		if err != nil {
-			return err
-		}
-
-		// adding route tables to spec
-		for _, table := range rt {
-			for _, tag := range table.Tags {
-				if tagDefaultKeyRouteTableId == aws.StringValue(tag.Key) {
-					spec.tableID[aws.StringValue(tag.Value)] = aws.StringValue(table.RouteTableId)
-				}
-			}
-		}
-		//stackID, err := p.createCFStack(nets, spec)
-		//if err != nil {
-		//	return fmt.Errorf("Failed to create CF stack: %v", err)
-		//}
-		//log.Infof("%s: Created CF Stack %s", p, stackID)
-
-		stackID, err := p.updateCFStack(nets, spec)
-
-		if err != nil {
-			return fmt.Errorf("Failed to update CF stack: %v", err)
-		}
-		log.Infof("%s: Updated CF Stack %s", p, stackID)
+func (p *AwsProvider) generateStackSpec(nets []string) (stackSpec, error) {
+	spec := stackSpec{
+		template:         p.generateTemplate(nets),
+		tableID:          make(map[string]string),
+		timeoutInMinutes: 10,
 	}
+
+	//get VPC
+	vpcs, err := p.getVpcID()
+	log.Debugf("%s: vpcs: %v", p, vpcs)
+	if err != nil {
+		return spec, err
+	}
+
+	//get vpc ID from default vpc
+	for _, vpc := range vpcs {
+		if aws.BoolValue(vpc.IsDefault) {
+			spec.vpcID = aws.StringValue(vpc.VpcId)
+		}
+	}
+
+	//get assigned internet gateway
+	igw, err := p.getInternetGatewayId(spec.vpcID)
+	log.Debugf("%s: igw: %v", p, igw)
+	if err != nil {
+		return spec, err
+	}
+
+	//get first internet gateway ID
+	igwID := aws.StringValue(igw[0].InternetGatewayId)
+	spec.internetGatewayID = igwID
+
+	//get route tables
+	rt, err := p.getRouteTables(spec.vpcID)
+	log.Debugf("%s: rt: %v", p, rt)
+	if err != nil {
+		return spec, err
+	}
+
+	// adding route tables to spec
+	for _, table := range rt {
+		for _, tag := range table.Tags {
+			if tagDefaultKeyRouteTableId == aws.StringValue(tag.Key) {
+				spec.tableID[aws.StringValue(tag.Value)] = aws.StringValue(table.RouteTableId)
+			}
+		}
+	}
+	return spec, nil
+}
+
+func (p *AwsProvider) Create(nets []string) error {
+	log.Infof("%s: Create(%v)", p, nets)
+	spec, err := p.generateStackSpec(nets)
+	if err != nil {
+		return fmt.Errorf("Failed to generate spec for create: %v", err)
+	}
+
+	stackID, err := p.createCFStack(nets, &spec)
+	if err != nil {
+		return fmt.Errorf("Failed to create CF stack: %v", err)
+	}
+	log.Infof("%s: Created CF Stack %s", p, stackID)
+	return nil
+}
+
+func (p *AwsProvider) Update(nets []string) error {
+	log.Infof("%s: Upsert(%v)", p, nets)
+	spec, err := p.generateStackSpec(nets)
+	if err != nil {
+		return fmt.Errorf("Failed to generate spec for create: %v", err)
+	}
+
+	stackID, err := p.updateCFStack(nets, &spec)
+	if err != nil {
+		return fmt.Errorf("Failed to update CF stack: %v", err)
+	}
+	log.Infof("%s: Updated CF Stack %s", p, stackID)
 	return nil
 }
 
 func (p *AwsProvider) Delete() error {
-	log.Infof("%s Delete()", ProviderName)
-	if !p.dry {
-		p.deleteCFStack()
-	}
+	log.Infof("%s Delete()", p)
+	p.deleteCFStack()
 	return nil
 }
 
@@ -218,8 +233,12 @@ func (p *AwsProvider) generateTemplate(nets []string) string {
 
 func (p *AwsProvider) deleteCFStack() error {
 	params := &cloudformation.DeleteStackInput{StackName: aws.String(stackName)}
-	_, err := p.cloudformation.DeleteStack(params)
-	return err
+	if !p.dry {
+		_, err := p.cloudformation.DeleteStack(params)
+		return err
+	}
+	log.Debugf("%s: Stack to delete: %s", p, stackName)
+	return nil
 }
 
 func (p *AwsProvider) updateCFStack(nets []string, spec *stackSpec) (string, error) {
@@ -237,12 +256,15 @@ func (p *AwsProvider) updateCFStack(nets []string, spec *stackSpec) (string, err
 				fmt.Sprintf("AZ%dRouteTableIDParameter", i+1),
 				spec.tableID[az]))
 	}
-	resp, err := p.cloudformation.UpdateStack(params)
-	if err != nil {
-		return spec.name, err
+	if !p.dry {
+		resp, err := p.cloudformation.UpdateStack(params)
+		if err != nil {
+			return spec.name, err
+		}
+		return aws.StringValue(resp.StackId), nil
 	}
-
-	return aws.StringValue(resp.StackId), nil
+	log.Debugf("%s: DRY: Stack to update: %s", p, params)
+	return "DRY stackID", nil
 }
 
 func (p *AwsProvider) createCFStack(nets []string, spec *stackSpec) (string, error) {
@@ -262,12 +284,16 @@ func (p *AwsProvider) createCFStack(nets []string, spec *stackSpec) (string, err
 				fmt.Sprintf("AZ%dRouteTableIDParameter", i+1),
 				spec.tableID[az]))
 	}
-	resp, err := p.cloudformation.CreateStack(params)
-	if err != nil {
-		return spec.name, err
+	if !p.dry {
+		resp, err := p.cloudformation.CreateStack(params)
+		if err != nil {
+			return spec.name, err
+		}
+		return aws.StringValue(resp.StackId), nil
 	}
+	log.Debugf("%s: DRY: Stack to create: %s", p, params)
+	return "DRY stackID", nil
 
-	return aws.StringValue(resp.StackId), nil
 }
 
 func defaultConfigProvider() client.ConfigProvider {
