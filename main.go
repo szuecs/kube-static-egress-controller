@@ -254,13 +254,13 @@ func enterProvider(wg *sync.WaitGroup, p provider.Provider, providerCH <-chan []
 				}
 			} else if len(output) > 0 {
 				if !sameValues(resultCache, output) {
-					resultCache = output
-					log.Infof("Provider(%s): got %d targets", p, len(output))
+					log.Infof("Provider(%s): got %d targets, cached: %d", p, len(output), len(resultCache))
 					if len(resultCache) == 0 {
 						err = p.Create(output)
 					} else {
 						err = p.Update(output)
 					}
+					resultCache = output
 				}
 			} else {
 				log.Infof("Provider(%s): got no targets could be a failure -> do nothing", p)
