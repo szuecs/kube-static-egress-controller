@@ -56,7 +56,7 @@ func (p *AwsProvider) generateStackSpec(nets []string) (stackSpec, error) {
 
 	//get VPC
 	vpcs, err := p.getVpcID()
-	log.Debugf("%s: vpcs: %v", p, vpcs)
+	log.Debugf("%s: vpcs(%d)", p, len(vpcs))
 	if err != nil {
 		return spec, err
 	}
@@ -70,7 +70,7 @@ func (p *AwsProvider) generateStackSpec(nets []string) (stackSpec, error) {
 
 	//get assigned internet gateway
 	igw, err := p.getInternetGatewayId(spec.vpcID)
-	log.Debugf("%s: igw: %v", p, igw)
+	log.Debugf("%s: igw(%d)", p, len(igw))
 	if err != nil {
 		return spec, err
 	}
@@ -81,7 +81,7 @@ func (p *AwsProvider) generateStackSpec(nets []string) (stackSpec, error) {
 
 	//get route tables
 	rt, err := p.getRouteTables(spec.vpcID)
-	log.Debugf("%s: rt: %v", p, rt)
+	log.Debugf("%s: rt(%d)", p, len(rt))
 	if err != nil {
 		return spec, err
 	}
@@ -116,7 +116,7 @@ func (p *AwsProvider) Update(nets []string) error {
 	log.Infof("%s: Upsert(%v)", p, nets)
 	spec, err := p.generateStackSpec(nets)
 	if err != nil {
-		return fmt.Errorf("Failed to generate spec for create: %v", err)
+		return fmt.Errorf("Failed to generate spec for update: %v", err)
 	}
 
 	stackID, err := p.updateCFStack(nets, &spec)
@@ -131,12 +131,6 @@ func (p *AwsProvider) Delete() error {
 	log.Infof("%s Delete()", p)
 	p.deleteCFStack()
 	return nil
-}
-
-var parameterAZRouteTableIDParameter = []string{
-	"AZ1RouteTableIDParameter",
-	"AZ2RouteTableIDParameter",
-	"AZ3RouteTableIDParameter",
 }
 
 type stackSpec struct {
@@ -263,7 +257,7 @@ func (p *AwsProvider) updateCFStack(nets []string, spec *stackSpec) (string, err
 		}
 		return aws.StringValue(resp.StackId), nil
 	}
-	log.Debugf("%s: DRY: Stack to update: %s", p, params)
+	log.Debugf("%s: DRY: Stack to update: %s", p, aws.StringValue(params.TemplateBody))
 	return "DRY stackID", nil
 }
 
@@ -291,7 +285,7 @@ func (p *AwsProvider) createCFStack(nets []string, spec *stackSpec) (string, err
 		}
 		return aws.StringValue(resp.StackId), nil
 	}
-	log.Debugf("%s: DRY: Stack to create: %s", p, params)
+	log.Debugf("%s: DRY: Stack to create: %s", p, aws.StringValue(params.TemplateBody))
 	return "DRY stackID", nil
 
 }
