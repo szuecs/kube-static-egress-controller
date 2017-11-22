@@ -136,131 +136,24 @@ func run(config *restclient.Config, p provider.Provider) {
 
 	// init sync
 	wg.Add(1)
-	go func(ch chan<- map[string][]string) {
-		defer wg.Done()
-		log.Debugln("Init: get initial configmap data")
-		defer log.Infoln("Init: quit")
-		list, err := watcher.ListConfigMaps()
-		if err != nil {
-			log.Fatalf("Init: Failed to list ConfigMaps: %v", err)
-		}
-		log.Infof("Init: Bootstrap list: %v", list)
-		ch <- list
-	}(watchCH)
+	go initSync(watcher, &wg, watchCH)
 
 	// watcher
 	wg.Add(1)
-	go func(ch chan<- map[string][]string) {
-		defer wg.Done()
-		defer log.Infoln("Watcher: quit")
-		log.Debugln("Watcher: start")
-		err = watcher.WatchConfigMaps(ch)
-		if err != nil {
-			log.Fatalf("Watcher: Failed to enter ConfigMap watcher: %v", err)
-		}
-	}(watchCH)
+	go enterWatcher(watcher, &wg, watchCH)
 
 	// merger
 	providerCH := make(chan []string)
 	wg.Add(1)
-	go func(ch <-chan map[string][]string, providerCH chan<- []string, quitCH <-chan struct{}) {
-		defer wg.Done()
-		log.Debugln("Merger: start")
-		result := make(map[string][]string, 0)
-		for {
-			select {
-			case m := <-ch:
-				for k, v := range m {
-					result[k] = v
-					log.Debugf("Merger: %s -> %v", k, v)
-				}
-
-			case <-time.After(5 * time.Second):
-				log.Debugf("Merger: current state: %v", result)
-				res := make([]string, 0)
-				uniquer := map[string]bool{}
-				for _, v := range result {
-					for _, s := range v {
-						if _, ok := uniquer[s]; !ok {
-							uniquer[s] = true
-							res = append(res, s)
-						}
-					}
-				}
-				providerCH <- res
-			case <-quitCH:
-				log.Infoln("Merger: got quit signal")
-				return
-			}
-		}
-	}(watchCH, providerCH, quitCH)
+	go enterMerger(&wg, watchCH, providerCH, quitCH)
 
 	// Provider
 	wg.Add(1)
-	go func(providerCH <-chan []string, quitCH <-chan struct{}) {
-		defer wg.Done()
-		bootstrap := true
-		resultCache := make([]string, 0)
-		for {
-			select {
-			case input := <-providerCH:
-				output := make([]string, 0)
-				for _, s := range input {
-					_, ipnet, err := net.ParseCIDR(s)
-					if err != nil {
-						log.Warningf("Provider(%s): skipping not parseable CIDR: %s, err: %v", p, s, err)
-						continue
-					}
-					output = append(output, ipnet.String())
-				}
-				sort.SliceStable(output, func(i, j int) bool {
-					return output[i] < output[j]
-				})
-
-				if bootstrap {
-					resultCache = output
-					log.Infof("Provider(%s): bootstrapped", p)
-					bootstrap = false
-					continue
-				}
-
-				var err error
-				if len(input) == 0 { // not caused by faulty value in CIDR string
-					if !sameValues(resultCache, output) {
-						resultCache = output
-						log.Infof("Provider(%s): no targets -> delete", p)
-						err = p.Delete()
-					} else {
-						log.Debugf("Provider(%s): Delete change was already done", p)
-					}
-				} else if len(output) > 0 {
-					if !sameValues(resultCache, output) {
-						resultCache = output
-						log.Infof("Provider(%s): got %d targets", p, len(output))
-						if len(resultCache) == 0 {
-							err = p.Create(output)
-						} else {
-							err = p.Update(output)
-						}
-					}
-				} else {
-					log.Infof("Provider(%s): got no targets could be a failure -> do nothing", p)
-				}
-				if err != nil {
-					log.Errorf("Provider(%s): Failed to execute with %d targets (%v): %v", p, len(output), output, err)
-				}
-
-			case <-quitCH:
-				log.Infof("Provider(%s): got quit signal", p)
-				return
-			}
-		}
-	}(providerCH, quitCH)
+	go enterProvider(&wg, p, providerCH, quitCH)
 
 	// quit
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	// Block until a signal is received.
 	<-sigs
 	for i := 0; i < 3; i++ {
 		log.Infof("send quit to all %d", i)
@@ -268,6 +161,120 @@ func run(config *restclient.Config, p provider.Provider) {
 	}
 	wg.Wait()
 	log.Infoln("shutdown")
+}
+
+func initSync(watcher *kube.ConfigMapWatcher, wg *sync.WaitGroup, ch chan<- map[string][]string) {
+	defer wg.Done()
+	log.Debugln("Init: get initial configmap data")
+	defer log.Infoln("Init: quit")
+	list, err := watcher.ListConfigMaps()
+	if err != nil {
+		log.Fatalf("Init: Failed to list ConfigMaps: %v", err)
+	}
+	log.Infof("Init: Bootstrap list: %v", list)
+	ch <- list
+}
+
+func enterWatcher(watcher *kube.ConfigMapWatcher, wg *sync.WaitGroup, ch chan<- map[string][]string) {
+	defer wg.Done()
+	defer log.Infoln("Watcher: quit")
+	err := watcher.WatchConfigMaps(ch)
+	if err != nil {
+		log.Fatalf("Watcher: Failed to enter ConfigMap watcher: %v", err)
+	}
+}
+
+func enterMerger(wg *sync.WaitGroup, ch <-chan map[string][]string, providerCH chan<- []string, quitCH <-chan struct{}) {
+	defer wg.Done()
+	log.Debugln("Merger: start")
+	result := make(map[string][]string, 0)
+	for {
+		select {
+		case m := <-ch:
+			for k, v := range m {
+				result[k] = v
+				log.Debugf("Merger: %s -> %v", k, v)
+			}
+
+		case <-time.After(5 * time.Second):
+			log.Debugf("Merger: current state: %v", result)
+			res := make([]string, 0)
+			uniquer := map[string]bool{}
+			for _, v := range result {
+				for _, s := range v {
+					if _, ok := uniquer[s]; !ok {
+						uniquer[s] = true
+						res = append(res, s)
+					}
+				}
+			}
+			providerCH <- res
+		case <-quitCH:
+			log.Infoln("Merger: got quit signal")
+			return
+		}
+	}
+}
+
+func enterProvider(wg *sync.WaitGroup, p provider.Provider, providerCH <-chan []string, quitCH <-chan struct{}) {
+	defer wg.Done()
+	bootstrap := true
+	resultCache := make([]string, 0)
+	for {
+		select {
+		case input := <-providerCH:
+			output := make([]string, 0)
+			for _, s := range input {
+				_, ipnet, err := net.ParseCIDR(s)
+				if err != nil {
+					log.Warningf("Provider(%s): skipping not parseable CIDR: %s, err: %v", p, s, err)
+					continue
+				}
+				output = append(output, ipnet.String())
+			}
+			sort.SliceStable(output, func(i, j int) bool {
+				return output[i] < output[j]
+			})
+
+			if bootstrap {
+				resultCache = output
+				log.Infof("Provider(%s): bootstrapped", p)
+				bootstrap = false
+				continue
+			}
+
+			var err error
+			if len(input) == 0 { // not caused by faulty value in CIDR string
+				if !sameValues(resultCache, output) {
+					resultCache = output
+					log.Infof("Provider(%s): no targets -> delete", p)
+					err = p.Delete()
+				} else {
+					log.Debugf("Provider(%s): Delete change was already done", p)
+				}
+			} else if len(output) > 0 {
+				if !sameValues(resultCache, output) {
+					resultCache = output
+					log.Infof("Provider(%s): got %d targets", p, len(output))
+					if len(resultCache) == 0 {
+						err = p.Create(output)
+					} else {
+						err = p.Update(output)
+					}
+				}
+			} else {
+				log.Infof("Provider(%s): got no targets could be a failure -> do nothing", p)
+			}
+			if err != nil {
+				log.Errorf("Provider(%s): Failed to execute with %d targets (%v): %v", p, len(output), output, err)
+			}
+
+		case <-quitCH:
+			log.Infof("Provider(%s): got quit signal", p)
+			return
+		}
+	}
+
 }
 
 func sameValues(a, b []string) bool {
