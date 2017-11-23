@@ -163,7 +163,7 @@ func run(config *restclient.Config, p provider.Provider) {
 	log.Infoln("shutdown")
 }
 
-func initSync(watcher *kube.ConfigMapWatcher, wg *sync.WaitGroup, ch chan<- map[string][]string) {
+func initSync(watcher *kube.ConfigMapWatcher, wg *sync.WaitGroup, mergerCH chan<- map[string][]string) {
 	defer wg.Done()
 	log.Debugln("Init: get initial configmap data")
 	defer log.Infoln("Init: quit")
@@ -172,25 +172,25 @@ func initSync(watcher *kube.ConfigMapWatcher, wg *sync.WaitGroup, ch chan<- map[
 		log.Fatalf("Init: Failed to list ConfigMaps: %v", err)
 	}
 	log.Infof("Init: Bootstrap list: %v", list)
-	ch <- list
+	mergerCH <- list
 }
 
-func enterWatcher(watcher *kube.ConfigMapWatcher, wg *sync.WaitGroup, ch chan<- map[string][]string) {
+func enterWatcher(watcher *kube.ConfigMapWatcher, wg *sync.WaitGroup, mergerCH chan<- map[string][]string) {
 	defer wg.Done()
 	defer log.Infoln("Watcher: quit")
-	err := watcher.WatchConfigMaps(ch)
+	err := watcher.WatchConfigMaps(mergerCH)
 	if err != nil {
 		log.Fatalf("Watcher: Failed to enter ConfigMap watcher: %v", err)
 	}
 }
 
-func enterMerger(wg *sync.WaitGroup, ch <-chan map[string][]string, providerCH chan<- []string, quitCH <-chan struct{}) {
+func enterMerger(wg *sync.WaitGroup, watcherCH <-chan map[string][]string, providerCH chan<- []string, quitCH <-chan struct{}) {
 	defer wg.Done()
 	log.Debugln("Merger: start")
 	result := make(map[string][]string, 0)
 	for {
 		select {
-		case m := <-ch:
+		case m := <-watcherCH:
 			for k, v := range m {
 				result[k] = v
 				log.Debugf("Merger: %s -> %v", k, v)
@@ -216,13 +216,13 @@ func enterMerger(wg *sync.WaitGroup, ch <-chan map[string][]string, providerCH c
 	}
 }
 
-func enterProvider(wg *sync.WaitGroup, p provider.Provider, providerCH <-chan []string, quitCH <-chan struct{}) {
+func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []string, quitCH <-chan struct{}) {
 	defer wg.Done()
 	bootstrap := true
 	resultCache := make([]string, 0)
 	for {
 		select {
-		case input := <-providerCH:
+		case input := <-mergerCH:
 			output := make([]string, 0)
 			for _, s := range input {
 				_, ipnet, err := net.ParseCIDR(s)
