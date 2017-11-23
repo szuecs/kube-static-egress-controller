@@ -3,6 +3,7 @@ package aws
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/client"
@@ -207,11 +208,12 @@ func (p *AwsProvider) generateTemplate(nets []string) string {
 			VpcId: cft.Ref("VPCIDParameter").String(),
 		})
 	}
-	z := 0
-	for j := range nets {
+
+	for j, cidrEntry := range nets {
+		cleanCidrEntry := strings.Replace(cidrEntry, "/", "y", -1)
+		cleanCidrEntry = strings.Replace(cleanCidrEntry, ".", "x", -1)
 		for i := 1; i <= len(p.availabilityZones); i++ {
-			z++
-			template.AddResource(fmt.Sprintf("RouteToNAT%d", z), &cft.EC2Route{
+			template.AddResource("RouteToNAT"+cleanCidrEntry, &cft.EC2Route{
 				RouteTableId: cft.Ref(
 					fmt.Sprintf("AZ%dRouteTableIDParameter", i)).String(),
 				DestinationCidrBlock: cft.Ref(
