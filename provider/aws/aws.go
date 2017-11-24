@@ -213,7 +213,8 @@ func (p *AwsProvider) generateTemplate(nets []string) string {
 		cleanCidrEntry := strings.Replace(cidrEntry, "/", "y", -1)
 		cleanCidrEntry = strings.Replace(cleanCidrEntry, ".", "x", -1)
 		for i := 1; i <= len(p.availabilityZones); i++ {
-			template.AddResource("RouteToNAT"+cleanCidrEntry, &cft.EC2Route{
+			log.Debugf("RouteToNAT%dz%s", i, cleanCidrEntry)
+			template.AddResource(fmt.Sprintf("RouteToNAT%dz%s", i, cleanCidrEntry), &cft.EC2Route{
 				RouteTableId: cft.Ref(
 					fmt.Sprintf("AZ%dRouteTableIDParameter", i)).String(),
 				DestinationCidrBlock: cft.Ref(
@@ -260,6 +261,7 @@ func (p *AwsProvider) updateCFStack(nets []string, spec *stackSpec) (string, err
 		return aws.StringValue(resp.StackId), nil
 	}
 	log.Debugf("%s: DRY: Stack to update: %s", p, params)
+	log.Debugln(aws.StringValue(params.TemplateBody))
 	return "DRY stackID", nil
 }
 
@@ -288,6 +290,7 @@ func (p *AwsProvider) createCFStack(nets []string, spec *stackSpec) (string, err
 		return aws.StringValue(resp.StackId), nil
 	}
 	log.Debugf("%s: DRY: Stack to create: %s", p, params)
+	log.Debugln(aws.StringValue(params.TemplateBody))
 	return "DRY stackID", nil
 
 }
