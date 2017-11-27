@@ -27,6 +27,8 @@ var (
 	version    = "unknown"
 	buildstamp = "unknown"
 	githash    = "unknown"
+
+	flushToProviderInterval time.Duration = 5 * time.Second
 )
 
 type Config struct {
@@ -84,6 +86,7 @@ Example:
 	app.Flag("provider", "Provider implementing static egress <noop|aws> (default: auto-detect)").Default(defaultConfig.Provider).StringVar(&cfg.Provider)
 	app.Flag("aws-nat-cidr-block", "AWS Provider requires to specify NAT-CIDR-Blocks for each AZ to have a NAT gateway in. Each should be a small network having only the NAT GW").StringsVar(&cfg.NatCidrBlocks)
 	app.Flag("aws-az", "AWS Provider requires to specify all AZs to have a NAT gateway in.").StringsVar(&cfg.AvailabilityZones)
+	app.Flag("flush-interval", "Minimum interval to call provider on change events.").DurationVar(&flushToProviderInterval)
 	app.Flag("dry-run", "When enabled, prints changes rather than actually performing them (default: disabled)").BoolVar(&cfg.DryRun)
 	app.Flag("log-level", "Set the level of logging. (default: info, options: panic, debug, info, warn, error, fatal").Default(defaultConfig.LogLevel).EnumVar(&cfg.LogLevel, allLogLevelsAsStrings()...)
 	_, err := app.Parse(args)
@@ -196,7 +199,7 @@ func enterMerger(wg *sync.WaitGroup, watcherCH <-chan map[string][]string, provi
 				log.Debugf("Merger: %s -> %v", k, v)
 			}
 
-		case <-time.After(5 * time.Second):
+		case <-time.After(flushToProviderInterval):
 			log.Debugf("Merger: current state: %v", result)
 			res := make([]string, 0)
 			uniquer := map[string]bool{}
