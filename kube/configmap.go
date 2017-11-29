@@ -9,7 +9,6 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	v1 "k8s.io/client-go/pkg/api/v1"
-	"k8s.io/client-go/rest"
 )
 
 type ConfigMapWatcher struct {
@@ -20,13 +19,7 @@ type ConfigMapWatcher struct {
 	quitCH   <-chan struct{}
 }
 
-func NewConfigMapWatcher(config *rest.Config, ns, selector string, quitCH <-chan struct{}) (*ConfigMapWatcher, error) {
-	client, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, err
-	}
-	log.Infof("Connected to cluster at %s", config.Host)
-
+func NewConfigMapWatcher(client kubernetes.Interface, ns, selector string, quitCH <-chan struct{}) (*ConfigMapWatcher, error) {
 	return &ConfigMapWatcher{
 		client:   client,
 		ns:       ns,
@@ -62,11 +55,13 @@ func (cmw *ConfigMapWatcher) WatchConfigMaps(resultCH chan<- map[string][]string
 	defer log.Infoln("Watcher: stopped to watch ConfigMaps")
 
 	for {
+		log.Debug("begin for")
 		select {
 		case ev := <-evCH:
+
 			cmap, ok := ev.Object.(*v1.ConfigMap)
 			if !ok {
-				log.Errorf("Failed to cast event to ConfigMap %v", ev.Object)
+				log.Errorf("Failed to cast event to ConfigMap %v %v", ev.Type, ev.Object)
 				time.Sleep(10 * time.Second)
 				continue // TODO(sszuecs) we might want to increase a metrics counter
 			}

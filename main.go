@@ -6,15 +6,18 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"github.com/szuecs/kube-static-egress-controller/kube"
 	provider "github.com/szuecs/kube-static-egress-controller/provider"
 	kingpin "gopkg.in/alecthomas/kingpin.v2"
-	restclient "k8s.io/client-go/rest"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
@@ -28,7 +31,7 @@ var (
 	buildstamp = "unknown"
 	githash    = "unknown"
 
-	flushToProviderInterval time.Duration = 5 * time.Second
+	flushToProviderInterval time.Duration
 )
 
 type Config struct {
@@ -86,7 +89,7 @@ Example:
 	app.Flag("provider", "Provider implementing static egress <noop|aws> (default: auto-detect)").Default(defaultConfig.Provider).StringVar(&cfg.Provider)
 	app.Flag("aws-nat-cidr-block", "AWS Provider requires to specify NAT-CIDR-Blocks for each AZ to have a NAT gateway in. Each should be a small network having only the NAT GW").StringsVar(&cfg.NatCidrBlocks)
 	app.Flag("aws-az", "AWS Provider requires to specify all AZs to have a NAT gateway in.").StringsVar(&cfg.AvailabilityZones)
-	app.Flag("flush-interval", "Minimum interval to call provider on change events.").DurationVar(&flushToProviderInterval)
+	app.Flag("flush-interval", "Minimum interval to call provider on change events.").Default("5s").DurationVar(&flushToProviderInterval)
 	app.Flag("dry-run", "When enabled, prints changes rather than actually performing them (default: disabled)").BoolVar(&cfg.DryRun)
 	app.Flag("log-level", "Set the level of logging. (default: info, options: panic, debug, info, warn, error, fatal").Default(defaultConfig.LogLevel).EnumVar(&cfg.LogLevel, allLogLevelsAsStrings()...)
 	_, err := app.Parse(args)
@@ -117,20 +120,36 @@ func main() {
 	log.SetLevel(ll)
 	log.Debugf("config: %+v", cfg)
 
-	config, err := clientcmd.BuildConfigFromFlags(cfg.Master, cfg.KubeConfig)
-	if err != nil {
-		log.Fatalf("Failed to create config: %v", err)
-	}
-
 	p := provider.NewProvider(cfg.DryRun, cfg.Provider, cfg.NatCidrBlocks, cfg.AvailabilityZones)
-	run(config, p)
+	run(newKubeClient(), p)
 }
 
-func run(config *restclient.Config, p provider.Provider) {
+// newKubeClient returns a new Kubernetes client with the default config.
+func newKubeClient() kubernetes.Interface {
+	var kubeconfig string
+	if _, err := os.Stat(clientcmd.RecommendedHomeFile); err == nil {
+		kubeconfig = clientcmd.RecommendedHomeFile
+	}
+	log.Debugf("use config file %s", kubeconfig)
+	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	if err != nil {
+		log.Fatalf("build config failed: %v", err)
+	}
+
+	client, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		log.Fatalf("initialize kubernetes client failed: %v", err)
+	}
+	log.Infof("Connected to cluster at %s", config.Host)
+
+	return client
+}
+
+func run(client kubernetes.Interface, p provider.Provider) {
 	quitCH := make(chan struct{})
 	var wg sync.WaitGroup
 
-	watcher, err := kube.NewConfigMapWatcher(config, "", "egress=static", quitCH)
+	watcher, err := kube.NewConfigMapWatcher(client, "", "egress=static", quitCH)
 	if err != nil {
 		log.Fatalf("Failed to create ConfigMapWatcher: %v", err)
 	}
@@ -262,6 +281,17 @@ func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []st
 						err = p.Create(output)
 					} else {
 						err = p.Update(output)
+						// create if stack does not exist, but we have targets
+						if err != nil {
+							switch e := errors.Cause(err).(type) {
+							case awserr.Error:
+								log.Infof("%s | %s | %s", e.Code(), e.Message(), e.OrigErr())
+								if strings.Contains(e.Message(), "does not exist") {
+									err = p.Create(output)
+
+								}
+							}
+						}
 					}
 					resultCache = output
 				}
