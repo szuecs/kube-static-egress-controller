@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
 	cft "github.com/crewjam/go-cloudformation"
 	"github.com/linki/instrumented_http"
+	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -102,12 +103,12 @@ func (p *AwsProvider) Create(nets []string) error {
 	log.Infof("%s: Create(%v)", p, nets)
 	spec, err := p.generateStackSpec(nets)
 	if err != nil {
-		return fmt.Errorf("Failed to generate spec for create: %v", err)
+		return errors.Wrap(err, "failed to generate spec for create")
 	}
 
 	stackID, err := p.createCFStack(nets, &spec)
 	if err != nil {
-		return fmt.Errorf("Failed to create CF stack: %v", err)
+		return errors.Wrap(err, "failed to create CF stack")
 	}
 	log.Infof("%s: Created CF Stack %s", p, stackID)
 	return nil
@@ -117,12 +118,12 @@ func (p *AwsProvider) Update(nets []string) error {
 	log.Infof("%s: Update(%v)", p, nets)
 	spec, err := p.generateStackSpec(nets)
 	if err != nil {
-		return fmt.Errorf("Failed to generate spec for update: %v", err)
+		return errors.Wrap(err, "failed to generate spec for update")
 	}
 
 	stackID, err := p.updateCFStack(nets, &spec)
 	if err != nil {
-		return fmt.Errorf("Failed to update CF stack: %v", err)
+		return errors.Wrap(err, "failed to update CF stack")
 	}
 	log.Infof("%s: Updated CF Stack %s", p, stackID)
 	return nil
@@ -130,8 +131,7 @@ func (p *AwsProvider) Update(nets []string) error {
 
 func (p *AwsProvider) Delete() error {
 	log.Infof("%s Delete()", p)
-	p.deleteCFStack()
-	return nil
+	return p.deleteCFStack()
 }
 
 type stackSpec struct {
