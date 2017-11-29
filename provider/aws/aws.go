@@ -23,7 +23,7 @@ const (
 	stackName                           = "egress-static-nat"
 	parameterVPCIDParameter             = "VPCIDParameter"
 	parameterInternetGatewayIDParameter = "InternetGatewayIDParameter"
-	tagDefaultKeyRouteTableId           = "AvailabilityZone"
+	tagDefaultKeyRouteTableID           = "AvailabilityZone"
 )
 
 type AwsProvider struct {
@@ -91,7 +91,7 @@ func (p *AwsProvider) generateStackSpec(nets []string) (stackSpec, error) {
 	// adding route tables to spec
 	for _, table := range rt {
 		for _, tag := range table.Tags {
-			if tagDefaultKeyRouteTableId == aws.StringValue(tag.Key) {
+			if tagDefaultKeyRouteTableID == aws.StringValue(tag.Key) {
 				spec.tableID[aws.StringValue(tag.Value)] = aws.StringValue(table.RouteTableId)
 			}
 		}
@@ -148,6 +148,8 @@ type stackSpec struct {
 
 func (p *AwsProvider) generateTemplate(nets []string) string {
 	template := cft.NewTemplate()
+	template.Description = "Static Egress Stack"
+	template.Outputs = map[string]*cft.Output{}
 	template.Parameters["VPCIDParameter"] = &cft.Parameter{
 		Description: "VPC ID",
 		Type:        "AWS::EC2::VPC::Id",
@@ -177,9 +179,15 @@ func (p *AwsProvider) generateTemplate(nets []string) string {
 			AllocationId: cft.GetAtt(
 				fmt.Sprintf("EIP%d", i), "AllocationId"),
 		})
+
 		template.AddResource(fmt.Sprintf("EIP%d", i), &cft.EC2EIP{
 			Domain: cft.String("vpc"),
 		})
+		template.Outputs[fmt.Sprintf("EIP%d", i)] = &cft.Output{
+			Description: fmt.Sprintf("external IP of the NATGateway%d", i),
+			Value:       cft.Ref(fmt.Sprintf("EIP%d", i)),
+		}
+
 		template.AddResource(fmt.Sprintf("NATSubnet%d", i), &cft.EC2Subnet{
 			CidrBlock:        cft.String(p.natCidrBlocks[i-1]),
 			AvailabilityZone: cft.String(p.availabilityZones[i-1]),
@@ -284,6 +292,7 @@ func (p *AwsProvider) createCFStack(nets []string, spec *stackSpec) (string, err
 	}
 	if !p.dry {
 		resp, err := p.cloudformation.CreateStack(params)
+		log.Debugf("Stackoutput: %+v", resp)
 		if err != nil {
 			return spec.name, err
 		}
@@ -351,7 +360,7 @@ func (p *AwsProvider) getRouteTables(vpcID string) ([]*ec2.RouteTable, error) {
 			{
 				Name: aws.String("tag-key"),
 				Values: []*string{
-					aws.String(tagDefaultKeyRouteTableId),
+					aws.String(tagDefaultKeyRouteTableID),
 				},
 			},
 		},
