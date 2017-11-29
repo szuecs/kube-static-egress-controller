@@ -2,6 +2,7 @@ package: github.com/szuecs/kube-static-egress-controller
 import:
 - package: github.com/sirupsen/logrus
 - package: github.com/crewjam/go-cloudformation
+- package: github.com/pkg/errors
 - package: k8s.io/apimachinery
   subpackages:
   - pkg/apis/meta/v1
