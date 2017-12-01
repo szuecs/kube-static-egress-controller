@@ -15,23 +15,15 @@ configmaps they want. They can choose if this should be part of their
 deployment or a global configuration. You can also choose to select a
 namespace to limit the usage to a given namespace.
 
-
-## Deployment
-
-TODO
-
 ## How it works
 
-TODO
-
-- we use the default VPC (found via API call ec2.DescribeVpcs)
-- we use internetGW attached to the found VPC
-- we get routeTables via filter vpcid and --tag-key=AvailabilityZone. The Tag value will be the routeTableID of your routeTable. This tag has to be specified by the user for each dmz routing table
-- --aws-nat-cidr-block=172.31.64.0/28 is used as Subnet, you have to
-  have the same number of Subnets as you use AZs to apply to your NAT GWs
-- --aws-az=eu-central-1a is used to create NAT GW in
-
-- [ ] find out who sets Name=dmz-eu-central-1a in routeTable Tag
+1. list configmap by label selector to get a current list
+1. enter watch configmap by label selector goroutine to react on updates
+1. enter merge goroutine to build a sorted, uniqued list of target networks
+1. enter provider goroutine that calls provider implementations of
+Create(), Update(), Delete() to apply the rules specified by the user
+base. Apply steps will only be executed from this goroutine if a
+change was detected.
 
 ## Example
 
@@ -66,7 +58,19 @@ infrastructure it manages is:
 - AWS::EC2::EIP
 - AWS::EC2::Subnet
 
-#### Policy
+It uses your default VPC (call ec2.DescribeVpcs) and derives from it
+the InternetGateway.  It gets routeTables via filter vpcid and
+--tag-key=AvailabilityZone. The Tag value will be the routeTableID of
+your routeTable. This tag has to be specified by the user for each
+routing table in order to change the routes for the worker nodes.
+
+- --aws-nat-cidr-block=172.15.64.0/28 is used as Subnet, you have to
+  have the same number of Subnets as you use AZs to apply to your NAT GWs
+- --aws-az=eu-west-1a is used to create NAT GW and EIP in the specified AZ
+
+#### IAM role / Policy
+
+The IAM role attached to your POD has to have the following policy:
 
     {
         "Version": "2012-10-17",
@@ -175,6 +179,49 @@ infrastructure it manages is:
 
       ]
     }
+
+#### Deployment
+
+Replace `iam.amazonaws.com/role` with your role created to assign the
+policy from above. You should also run
+[kube2iam](https://github.com/jtblin/kube2iam) on that node to make
+the annotation work.
+
+    apiVersion: apps/v1beta1
+    kind: Deployment
+    metadata:
+      name: kube-static-egress-controller
+      namespace: kube-system
+    spec:
+      replicas: 1
+      template:
+        metadata:
+          annotations:
+            iam.amazonaws.com/role: "static-egress-controller-role"
+        spec:
+          containers:
+          - name: controller
+            image: registry.opensource.zalan.do/teapot/kube-static-egress-controller:latest
+            args:
+            - "--log-level=debug"
+            - "--provider=aws"
+            - "--aws-nat-cidr-block=172.15.64.0/28"
+            - "--aws-nat-cidr-block=172.15.64.16/28"
+            - "--aws-nat-cidr-block=172.15.64.32/28"
+            - "--aws-az=eu-west-1a"
+            - "--aws-az=eu-west-1b"
+            - "--aws-az=eu-west-1c"
+            env:
+            - name: AWS_REGION
+              value: eu-west-1
+            resources:
+              limits:
+                cpu: 100m
+                memory: 200Mi
+              requests:
+                cpu: 5m
+                memory: 25Mi
+
 
 ### Inmemory
 
