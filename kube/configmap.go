@@ -58,7 +58,7 @@ func (cmw *ConfigMapWatcher) WatchConfigMaps(resultCH chan<- map[string][]string
 		}
 	}
 }
-func (cmw *ConfigMapWatcher) WatchConfigMaps(resultCH chan<- map[string][]string) error {
+func (cmw *ConfigMapWatcher) watchConfigMaps(resultCH chan<- map[string][]string) error {
 
 	w := cmw.client.CoreV1().ConfigMaps(cmw.ns)
 	opts := cmw.opts
