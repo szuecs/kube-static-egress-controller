@@ -1,6 +1,7 @@
 package kube
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -9,6 +10,10 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	v1 "k8s.io/client-go/pkg/api/v1"
+)
+
+var (
+	ErrClosedChannel = errors.New("closed watch channel")
 )
 
 type ConfigMapWatcher struct {
@@ -43,6 +48,18 @@ func (t Tuple) String() string {
 }
 
 func (cmw *ConfigMapWatcher) WatchConfigMaps(resultCH chan<- map[string][]string) error {
+	for {
+		err := cmw.watchConfigMaps(resultCH)
+		if err == ErrClosedChannel {
+			log.Info("closed channel event, restart watch")
+			continue
+		} else {
+			return err
+		}
+	}
+}
+func (cmw *ConfigMapWatcher) WatchConfigMaps(resultCH chan<- map[string][]string) error {
+
 	w := cmw.client.CoreV1().ConfigMaps(cmw.ns)
 	opts := cmw.opts
 	opts.Watch = true
@@ -57,13 +74,16 @@ func (cmw *ConfigMapWatcher) WatchConfigMaps(resultCH chan<- map[string][]string
 	for {
 		log.Debug("begin for")
 		select {
-		case ev := <-evCH:
-
+		case ev, okCH := <-evCH:
+			if !okCH {
+				return ErrClosedChannel
+			}
 			cmap, ok := ev.Object.(*v1.ConfigMap)
 			if !ok {
-				log.Errorf("Failed to cast event to ConfigMap %v %v", ev.Type, ev.Object)
-				time.Sleep(10 * time.Second)
-				continue // TODO(sszuecs) we might want to increase a metrics counter
+				log.Errorf("Failed to cast event to ConfigMap %v %v, raw: %+v", ev.Type, ev.Object, ev)
+				res, err := cmw.client.CoreV1().ConfigMaps(cmw.ns).List(meta_v1.ListOptions{})
+				log.Infof("res: %v, err: %v", res, err)
+				return err
 			}
 			results := make(map[string][]string)
 			k := fmt.Sprintf("%s/%s", cmap.Namespace, cmap.Name)
