@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cenkalti/backoff"
+
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
@@ -239,6 +241,8 @@ func enterMerger(wg *sync.WaitGroup, watcherCH <-chan map[string][]string, provi
 }
 
 func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []string, quitCH <-chan struct{}) {
+	retry := backoff.NewConstantBackOff(60 * time.Second)
+	maxRetry := backoff.WithMaxTries(retry, 3)
 	defer wg.Done()
 	bootstrap := true
 	resultCache := make([]string, 0)
@@ -278,7 +282,14 @@ func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []st
 				if !sameValues(resultCache, output) {
 					log.Infof("Provider(%s): got %d targets, cached: %d", p, len(output), len(resultCache))
 					if len(resultCache) == 0 {
-						err = p.Create(output)
+						createFunc := func() error {
+							return p.Create(output)
+						}
+						err = backoff.Retry(createFunc, maxRetry)
+						if err != nil {
+							// handle me
+							log.Error(err)
+						}
 					} else {
 						err = p.Update(output)
 						// create if stack does not exist, but we have targets
@@ -288,7 +299,14 @@ func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []st
 								log.Infof("%s | %s | %s", e.Code(), e.Message(), e.OrigErr())
 								if strings.Contains(e.Message(), "does not exist") {
 									err = p.Create(output)
-
+									createFunc := func() error {
+										return p.Create(output)
+									}
+									err = backoff.Retry(createFunc, maxRetry)
+									if err != nil {
+										// handle me
+										log.Error(err)
+									}
 								}
 							}
 						}
