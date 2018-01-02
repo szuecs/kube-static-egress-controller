@@ -287,7 +287,6 @@ func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []st
 						}
 						err = backoff.Retry(createFunc, maxRetry)
 						if err != nil {
-							// handle me
 							log.Error(err)
 						}
 					} else {
@@ -304,7 +303,6 @@ func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []st
 									}
 									err = backoff.Retry(createFunc, maxRetry)
 									if err != nil {
-										// handle me
 										log.Error(err)
 									}
 								}
