@@ -242,7 +242,6 @@ func enterMerger(wg *sync.WaitGroup, watcherCH <-chan map[string][]string, provi
 
 func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []string, quitCH <-chan struct{}) {
 	retry := backoff.NewConstantBackOff(5 * time.Minute)
-	maxRetry := backoff.WithMaxTries(retry, 5)
 	defer wg.Done()
 	bootstrap := true
 	resultCache := make([]string, 0)
@@ -285,7 +284,7 @@ func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []st
 						createFunc := func() error {
 							return p.Create(output)
 						}
-						err = backoff.Retry(createFunc, maxRetry)
+						err = backoff.Retry(createFunc, retry)
 						if err != nil {
 							log.Error(err)
 						}
@@ -301,7 +300,7 @@ func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []st
 									createFunc := func() error {
 										return p.Create(output)
 									}
-									err = backoff.Retry(createFunc, maxRetry)
+									err = backoff.Retry(createFunc, retry)
 									if err != nil {
 										log.Error(err)
 									}
