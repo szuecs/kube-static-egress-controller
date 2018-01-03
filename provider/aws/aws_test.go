@@ -58,7 +58,7 @@ func TestGenerateStackSpec(t *testing.T) {
 				RouteTableId: aws.String("rtb-1111"),
 				Tags: []*ec2.Tag{
 					&ec2.Tag{
-						Key:   aws.String(tagDefaultKeyRouteTableID),
+						Key:   aws.String(tagDefaultAZKeyRouteTableID),
 						Value: aws.String("eu-central-1a"),
 					},
 				},
