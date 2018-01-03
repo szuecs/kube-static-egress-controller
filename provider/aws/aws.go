@@ -23,7 +23,8 @@ const (
 	stackName                           = "egress-static-nat"
 	parameterVPCIDParameter             = "VPCIDParameter"
 	parameterInternetGatewayIDParameter = "InternetGatewayIDParameter"
-	tagDefaultKeyRouteTableID           = "AvailabilityZone"
+	tagDefaultAZKeyRouteTableID         = "AvailabilityZone"
+	tagDefaultTypeValueRouteTableID     = "dmz" // find route table by "Type" tag = "dmz"
 )
 
 type AwsProvider struct {
@@ -91,7 +92,8 @@ func (p *AwsProvider) generateStackSpec(nets []string) (stackSpec, error) {
 	// adding route tables to spec
 	for _, table := range rt {
 		for _, tag := range table.Tags {
-			if tagDefaultKeyRouteTableID == aws.StringValue(tag.Key) {
+			if tagDefaultAZKeyRouteTableID == aws.StringValue(tag.Key) {
+				// eu-central-1a -> rtb-b738aadc
 				spec.tableID[aws.StringValue(tag.Value)] = aws.StringValue(table.RouteTableId)
 			}
 		}
@@ -358,9 +360,9 @@ func (p *AwsProvider) getRouteTables(vpcID string) ([]*ec2.RouteTable, error) {
 				},
 			},
 			{
-				Name: aws.String("tag-key"),
+				Name: aws.String("tag:Type"),
 				Values: []*string{
-					aws.String(tagDefaultKeyRouteTableID),
+					aws.String(tagDefaultTypeValueRouteTableID),
 				},
 			},
 		},
