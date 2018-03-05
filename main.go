@@ -46,16 +46,18 @@ type Config struct {
 	// required by AWS provider
 	NatCidrBlocks []string
 	// required by AWS provider
-	AvailabilityZones []string
+	AvailabilityZones          []string
+	StackTerminationProtection bool
 }
 
 var defaultConfig = &Config{
-	Master:     "",
-	KubeConfig: "",
-	DryRun:     false,
-	LogFormat:  "text",
-	LogLevel:   log.InfoLevel.String(),
-	Provider:   "noop",
+	Master:                     "",
+	KubeConfig:                 "",
+	DryRun:                     false,
+	LogFormat:                  "text",
+	LogLevel:                   log.InfoLevel.String(),
+	Provider:                   "noop",
+	StackTerminationProtection: false,
 }
 
 func NewConfig() *Config {
@@ -91,6 +93,7 @@ Example:
 	app.Flag("provider", "Provider implementing static egress <noop|aws> (default: auto-detect)").Default(defaultConfig.Provider).StringVar(&cfg.Provider)
 	app.Flag("aws-nat-cidr-block", "AWS Provider requires to specify NAT-CIDR-Blocks for each AZ to have a NAT gateway in. Each should be a small network having only the NAT GW").StringsVar(&cfg.NatCidrBlocks)
 	app.Flag("aws-az", "AWS Provider requires to specify all AZs to have a NAT gateway in.").StringsVar(&cfg.AvailabilityZones)
+	app.Flag("stack-termination-protection", "Enables AWS clouformation stack termination protection for the stacks managed by the controller.").BoolVar(&cfg.StackTerminationProtection)
 	app.Flag("flush-interval", "Minimum interval to call provider on change events.").Default("5s").DurationVar(&flushToProviderInterval)
 	app.Flag("dry-run", "When enabled, prints changes rather than actually performing them (default: disabled)").BoolVar(&cfg.DryRun)
 	app.Flag("log-level", "Set the level of logging. (default: info, options: panic, debug, info, warn, error, fatal").Default(defaultConfig.LogLevel).EnumVar(&cfg.LogLevel, allLogLevelsAsStrings()...)
@@ -122,7 +125,7 @@ func main() {
 	log.SetLevel(ll)
 	log.Debugf("config: %+v", cfg)
 
-	p := provider.NewProvider(cfg.DryRun, cfg.Provider, cfg.NatCidrBlocks, cfg.AvailabilityZones)
+	p := provider.NewProvider(cfg.DryRun, cfg.Provider, cfg.NatCidrBlocks, cfg.AvailabilityZones, cfg.StackTerminationProtection)
 	run(newKubeClient(), p)
 }
 
