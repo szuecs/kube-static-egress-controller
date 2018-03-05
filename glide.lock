@@ -1,5 +1,5 @@
-hash: 7663465ebd8fdf54963bc40a6071e0b78504f847430a0b76698a8791a83431e7
-updated: 2017-11-29T18:28:54.766058707+01:00
+hash: 628358c762eb3a7c9a33a508e803f452b0d4b5ecd405933ddcd36d3466326a6b
+updated: 2018-03-05T16:46:30.276886461+01:00
 imports:
 - name: github.com/alecthomas/template
   version: a0175ee3bccc567396460bf5acd36800cb10c49c
@@ -8,7 +8,7 @@ imports:
 - name: github.com/alecthomas/units
   version: 2efee857e7cfd4f3d0138cc3cbb1b4966962b93a
 - name: github.com/aws/aws-sdk-go
-  version: 80bf27afd5602f55c398d43621b9900583df3661
+  version: aace5875a5c3b85a3902c6d72b9caed301d64cce
   subpackages:
   - aws
   - aws/awserr
@@ -26,6 +26,7 @@ imports:
   - aws/request
   - aws/session
   - aws/signer/v4
+  - internal/sdkrand
   - internal/shareddefaults
   - private/protocol
   - private/protocol/ec2query
@@ -42,6 +43,8 @@ imports:
   version: 4c0e84591b9aa9e6dcfdf3e020114cd81f89d5f9
   subpackages:
   - quantile
+- name: github.com/cenkalti/backoff
+  version: 61153c768f31ee5f130071d08fc82b85208528de
 - name: github.com/crewjam/go-cloudformation
   version: d3183a4759da92da1e846521444ad08216b7f20e
 - name: github.com/davecgh/go-spew

@@ -28,14 +28,15 @@ const (
 )
 
 type AwsProvider struct {
-	dry               bool
-	natCidrBlocks     []string
-	availabilityZones []string
-	cloudformation    cloudformationiface.CloudFormationAPI
-	ec2               ec2iface.EC2API
+	dry                        bool
+	natCidrBlocks              []string
+	availabilityZones          []string
+	cloudformation             cloudformationiface.CloudFormationAPI
+	ec2                        ec2iface.EC2API
+	stackTerminationProtection bool
 }
 
-func NewAwsProvider(dry bool, natCidrBlocks, availabilityZones []string) *AwsProvider {
+func NewAwsProvider(dry bool, natCidrBlocks, availabilityZones []string, stackTerminationProtection bool) *AwsProvider {
 	p := defaultConfigProvider()
 	return &AwsProvider{
 		dry:               dry,
@@ -43,6 +44,7 @@ func NewAwsProvider(dry bool, natCidrBlocks, availabilityZones []string) *AwsPro
 		availabilityZones: availabilityZones,
 		cloudformation:    cloudformation.New(p),
 		ec2:               ec2.New(p),
+		stackTerminationProtection: stackTerminationProtection,
 	}
 }
 
@@ -52,9 +54,10 @@ func (p AwsProvider) String() string {
 
 func (p *AwsProvider) generateStackSpec(nets []string) (stackSpec, error) {
 	spec := stackSpec{
-		template:         p.generateTemplate(nets),
-		tableID:          make(map[string]string),
-		timeoutInMinutes: 10,
+		template:                   p.generateTemplate(nets),
+		tableID:                    make(map[string]string),
+		timeoutInMinutes:           10,
+		stackTerminationProtection: p.stackTerminationProtection,
 	}
 
 	//get VPC
@@ -137,15 +140,16 @@ func (p *AwsProvider) Delete() error {
 }
 
 type stackSpec struct {
-	name              string
-	vpcID             string
-	internetGatewayID string
-	routeTableIDAZ1   string
-	routeTableIDAZ2   string
-	routeTableIDAZ3   string
-	tableID           map[string]string
-	timeoutInMinutes  uint
-	template          string
+	name                       string
+	vpcID                      string
+	internetGatewayID          string
+	routeTableIDAZ1            string
+	routeTableIDAZ2            string
+	routeTableIDAZ3            string
+	tableID                    map[string]string
+	timeoutInMinutes           uint
+	template                   string
+	stackTerminationProtection bool
 }
 
 func (p *AwsProvider) generateTemplate(nets []string) string {
@@ -264,6 +268,19 @@ func (p *AwsProvider) updateCFStack(nets []string, spec *stackSpec) (string, err
 				spec.tableID[az]))
 	}
 	if !p.dry {
+		// ensure the stack termination protection is set
+		if spec.stackTerminationProtection {
+			termParams := &cloudformation.UpdateTerminationProtectionInput{
+				StackName:                   aws.String(spec.name),
+				EnableTerminationProtection: aws.Bool(spec.stackTerminationProtection),
+			}
+
+			_, err := p.cloudformation.UpdateTerminationProtection(termParams)
+			if err != nil {
+				return spec.name, err
+			}
+		}
+
 		resp, err := p.cloudformation.UpdateStack(params)
 		if err != nil {
 			return spec.name, err
@@ -283,8 +300,9 @@ func (p *AwsProvider) createCFStack(nets []string, spec *stackSpec) (string, err
 			cfParam(parameterVPCIDParameter, spec.vpcID),
 			cfParam(parameterInternetGatewayIDParameter, spec.internetGatewayID),
 		},
-		TemplateBody:     aws.String(spec.template),
-		TimeoutInMinutes: aws.Int64(int64(spec.timeoutInMinutes)),
+		TemplateBody:                aws.String(spec.template),
+		TimeoutInMinutes:            aws.Int64(int64(spec.timeoutInMinutes)),
+		EnableTerminationProtection: aws.Bool(spec.stackTerminationProtection),
 	}
 	for i, az := range p.availabilityZones {
 		params.Parameters = append(params.Parameters,
