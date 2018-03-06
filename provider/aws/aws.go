@@ -243,13 +243,27 @@ func (p *AwsProvider) generateTemplate(nets []string) string {
 }
 
 func (p *AwsProvider) deleteCFStack() error {
-	params := &cloudformation.DeleteStackInput{StackName: aws.String(stackName)}
-	if !p.dry {
-		_, err := p.cloudformation.DeleteStack(params)
-		return err
+	if p.dry {
+		log.Debugf("%s: Stack to delete: %s", p, stackName)
+		return nil
 	}
-	log.Debugf("%s: Stack to delete: %s", p, stackName)
-	return nil
+
+	if p.stackTerminationProtection {
+		// make sure to disable stack termination protection
+		termParams := &cloudformation.UpdateTerminationProtectionInput{
+			StackName:                   aws.String(stackName),
+			EnableTerminationProtection: aws.Bool(false),
+		}
+
+		_, err := p.cloudformation.UpdateTerminationProtection(termParams)
+		if err != nil {
+			return err
+		}
+	}
+
+	params := &cloudformation.DeleteStackInput{StackName: aws.String(stackName)}
+	_, err := p.cloudformation.DeleteStack(params)
+	return err
 }
 
 func (p *AwsProvider) updateCFStack(nets []string, spec *stackSpec) (string, error) {
