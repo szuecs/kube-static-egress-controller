@@ -169,7 +169,7 @@ func Test_enterProvider(t *testing.T) {
 		{
 			name:     "enterProvider noop quit test",
 			wg:       sync.WaitGroup{},
-			p:        provider.NewProvider(true, noop.ProviderName, []string{}, []string{}),
+			p:        provider.NewProvider(true, noop.ProviderName, []string{}, []string{}, false),
 			mergerCH: make(chan []string),
 			quitCH:   make(chan struct{}),
 			timeout:  3 * time.Second,

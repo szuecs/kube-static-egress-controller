@@ -35,7 +35,7 @@ func TestGenerateStackSpec(t *testing.T) {
 	natCidrBlocks := []string{"172.31.64.0/28"}
 	availabilityZones := []string{"eu-central-1a"}
 	destinationCidrBlocks := []string{"213.95.138.236/32"}
-	p := NewAwsProvider(true, natCidrBlocks, availabilityZones)
+	p := NewAwsProvider(true, natCidrBlocks, availabilityZones, false)
 	fakeVpcsResp := ec2.DescribeVpcsOutput{
 		Vpcs: []*ec2.Vpc{
 			&ec2.Vpc{
@@ -58,7 +58,7 @@ func TestGenerateStackSpec(t *testing.T) {
 				RouteTableId: aws.String("rtb-1111"),
 				Tags: []*ec2.Tag{
 					&ec2.Tag{
-						Key:   aws.String(tagDefaultKeyRouteTableID),
+						Key:   aws.String(tagDefaultAZKeyRouteTableID),
 						Value: aws.String("eu-central-1a"),
 					},
 				},
@@ -90,7 +90,7 @@ func TestGenerateTemplate(t *testing.T) {
 	natCidrBlocks := []string{"172.31.64.0/28"}
 	availabilityZones := []string{"eu-central-1a"}
 	destinationCidrBlocks := []string{"213.95.138.236/32"}
-	p := NewAwsProvider(true, natCidrBlocks, availabilityZones)
+	p := NewAwsProvider(true, natCidrBlocks, availabilityZones, false)
 	expect := `{"AWSTemplateFormatVersion":"2010-09-09","Description":"Static Egress Stack","Parameters":{"AZ1RouteTableIDParameter":{"Type":"String","Description":"Route Table ID Availability Zone 1"},"DestinationCidrBlock1":{"Type":"String","Default":"213.95.138.236/32","Description":"Destination CIDR Block 1"},"InternetGatewayIDParameter":{"Type":"String","Description":"Internet Gateway ID"},"VPCIDParameter":{"Type":"AWS::EC2::VPC::Id","Description":"VPC ID"}},"Resources":{"EIP1":{"Type":"AWS::EC2::EIP","Properties":{"Domain":"vpc"}},"NATGateway1":{"Type":"AWS::EC2::NatGateway","Properties":{"AllocationId":{"Fn::GetAtt":["EIP1","AllocationId"]},"SubnetId":{"Ref":"NATSubnet1"}}},"NATSubnet1":{"Type":"AWS::EC2::Subnet","Properties":{"AvailabilityZone":"eu-central-1a","CidrBlock":"172.31.64.0/28","Tags":[{"Key":"Name","Value":"nat-eu-central-1a"}],"VpcId":{"Ref":"VPCIDParameter"}}},"NATSubnetRoute1":{"Type":"AWS::EC2::Route","Properties":{"DestinationCidrBlock":"0.0.0.0/0","GatewayId":{"Ref":"InternetGatewayIDParameter"},"RouteTableId":{"Ref":"NATSubnetRouteTable1"}}},"NATSubnetRouteTable1":{"Type":"AWS::EC2::RouteTable","Properties":{"VpcId":{"Ref":"VPCIDParameter"}}},"NATSubnetRouteTableAssociation1":{"Type":"AWS::EC2::SubnetRouteTableAssociation","Properties":{"RouteTableId":{"Ref":"NATSubnetRouteTable1"},"SubnetId":{"Ref":"NATSubnet1"}}},"RouteToNAT1z213x95x138x236y32":{"Type":"AWS::EC2::Route","Properties":{"DestinationCidrBlock":{"Ref":"DestinationCidrBlock1"},"NatGatewayId":{"Ref":"NATGateway1"},"RouteTableId":{"Ref":"AZ1RouteTableIDParameter"}}}},"Outputs":{"EIP1":{"Description":"external IP of the NATGateway1","Value":{"Ref":"EIP1"}}}}`
 	template := p.generateTemplate(destinationCidrBlocks)
 	if template != expect {
