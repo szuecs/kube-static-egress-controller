@@ -285,7 +285,7 @@ func (p *AwsProvider) updateCFStack(nets []string, spec *stackSpec) (string, err
 		// ensure the stack termination protection is set
 		if spec.stackTerminationProtection {
 			termParams := &cloudformation.UpdateTerminationProtectionInput{
-				StackName:                   aws.String(spec.name),
+				StackName:                   aws.String(stackName),
 				EnableTerminationProtection: aws.Bool(spec.stackTerminationProtection),
 			}
 
