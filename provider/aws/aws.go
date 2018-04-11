@@ -220,6 +220,13 @@ func (p *AwsProvider) generateTemplate(nets []string) string {
 		})
 		template.AddResource(fmt.Sprintf("NATSubnetRouteTable%d", i), &cft.EC2RouteTable{
 			VpcId: cft.Ref("VPCIDParameter").String(),
+			Tags: []cft.ResourceTag{
+				cft.ResourceTag{
+					Key: cft.String("Name"),
+					Value: cft.String(
+						fmt.Sprintf("nat-%s", p.availabilityZones[i-1])),
+				},
+			},
 		})
 	}
 
