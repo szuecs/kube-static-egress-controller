@@ -287,7 +287,19 @@ func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []st
 						createFunc := func() error {
 							return p.Create(output)
 						}
-						err = backoff.Retry(createFunc, retry)
+						notify := func(err error, t time.Duration) {
+							log.Errorf("%v at time: %v", err, t)
+							if awsErr, ok := err.(awserr.Error); ok {
+								if awsErr.Code() == "AlreadyExistsException" {
+									log.Debugf("got AlreadyExistsException on Stack creation, trying to update it")
+									err = p.Update(output)
+									if err != nil {
+										log.Error(err)
+									}
+								}
+							}
+						}
+						err = backoff.RetryNotify(createFunc, retry, notify)
 						if err != nil {
 							log.Error(err)
 						}

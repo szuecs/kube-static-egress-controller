@@ -113,7 +113,7 @@ func (p *AwsProvider) Create(nets []string) error {
 
 	stackID, err := p.createCFStack(nets, &spec)
 	if err != nil {
-		return errors.Wrap(err, "failed to create CF stack")
+		return err
 	}
 	log.Infof("%s: Created CF Stack %s", p, stackID)
 	return nil
