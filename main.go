@@ -272,6 +272,18 @@ func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []st
 			}
 
 			var err error
+			createNotify := func(err error, t time.Duration) {
+				log.Errorf("%v at time: %v", err, t)
+				if awsErr, ok := err.(awserr.Error); ok {
+					if awsErr.Code() == "AlreadyExistsException" {
+						log.Debugf("got AlreadyExistsException on Stack creation, trying to update it")
+						err = p.Update(output)
+						if err != nil {
+							log.Error(err)
+						}
+					}
+				}
+			}
 			if len(input) == 0 { // not caused by faulty value in CIDR string
 				if !sameValues(resultCache, output) {
 					resultCache = output
@@ -287,19 +299,7 @@ func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []st
 						createFunc := func() error {
 							return p.Create(output)
 						}
-						notify := func(err error, t time.Duration) {
-							log.Errorf("%v at time: %v", err, t)
-							if awsErr, ok := err.(awserr.Error); ok {
-								if awsErr.Code() == "AlreadyExistsException" {
-									log.Debugf("got AlreadyExistsException on Stack creation, trying to update it")
-									err = p.Update(output)
-									if err != nil {
-										log.Error(err)
-									}
-								}
-							}
-						}
-						err = backoff.RetryNotify(createFunc, retry, notify)
+						err = backoff.RetryNotify(createFunc, retry, createNotify)
 						if err != nil {
 							log.Error(err)
 						}
@@ -315,7 +315,7 @@ func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []st
 									createFunc := func() error {
 										return p.Create(output)
 									}
-									err = backoff.Retry(createFunc, retry)
+									err = backoff.RetryNotify(createFunc, retry, createNotify)
 									if err != nil {
 										log.Error(err)
 									}
