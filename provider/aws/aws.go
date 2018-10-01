@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/client"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/cloudformation"
@@ -16,6 +17,7 @@ import (
 	"github.com/linki/instrumented_http"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
+	"github.com/szuecs/kube-static-egress-controller/provider"
 )
 
 const (
@@ -113,7 +115,7 @@ func (p *AwsProvider) Create(nets []string) error {
 
 	stackID, err := p.createCFStack(nets, &spec)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "failed to create CF stack")
 	}
 	log.Infof("%s: Created CF Stack %s", p, stackID)
 	return nil
@@ -304,6 +306,11 @@ func (p *AwsProvider) updateCFStack(nets []string, spec *stackSpec) (string, err
 
 		resp, err := p.cloudformation.UpdateStack(params)
 		if err != nil {
+			if awsErr, ok := err.(awserr.Error); ok {
+				if awsErr.Code() == "AlreadyExistsException" {
+					err = provider.NewAlreadyExistsError(fmt.Sprintf("%s AlreadyExists", stackName))
+				}
+			}
 			return spec.name, err
 		}
 		return aws.StringValue(resp.StackId), nil
@@ -335,6 +342,11 @@ func (p *AwsProvider) createCFStack(nets []string, spec *stackSpec) (string, err
 		resp, err := p.cloudformation.CreateStack(params)
 		log.Debugf("Stackoutput: %+v", resp)
 		if err != nil {
+			if awsErr, ok := err.(awserr.Error); ok {
+				if strings.Contains(awsErr.Message(), "does not exist") {
+					err = provider.NewDoesNotExistError(fmt.Sprintf("%s does not exist", stackName))
+				}
+			}
 			return spec.name, err
 		}
 		return aws.StringValue(resp.StackId), nil
