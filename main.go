@@ -290,8 +290,6 @@ func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []st
 					if err != nil {
 						log.Error(err)
 					}
-				default:
-					log.Errorf("updating stack err: %v at time: %v", err, t)
 				}
 			}
 			if len(input) == 0 { // not caused by faulty value in CIDR string

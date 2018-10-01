@@ -1,25 +1,25 @@
 package provider
 
 type AlreadyExistsError struct {
-	Msg string
+	msg string
 }
 
 type DoesNotExistError struct {
-	Msg string
+	msg string
 }
 
 func (error *AlreadyExistsError) Error() string {
-	return error.Msg
+	return error.msg
 }
 
 func (error *DoesNotExistError) Error() string {
-	return error.Msg
+	return error.msg
 }
 
-func NewAlreadyExistsError(text string) error {
-	return &AlreadyExistsError{text}
+func NewAlreadyExistsError(msg string) error {
+	return &AlreadyExistsError{msg}
 }
 
-func NewDoesNotExistError(text string) error {
-	return &DoesNotExistError{text}
+func NewDoesNotExistError(msg string) error {
+	return &DoesNotExistError{msg}
 }
