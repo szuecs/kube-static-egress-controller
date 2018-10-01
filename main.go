@@ -325,7 +325,7 @@ func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []st
 									log.Error(err)
 								}
 							default:
-								log.Errorf("updating stack err: %v", err)
+								log.Errorf("Failed to update stack: %v", err)
 							}
 						}
 					}
