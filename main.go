@@ -6,18 +6,18 @@ import (
 	"os"
 	"os/signal"
 	"sort"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/cenkalti/backoff"
 
-	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"github.com/szuecs/kube-static-egress-controller/kube"
-	provider "github.com/szuecs/kube-static-egress-controller/provider"
+	"github.com/szuecs/kube-static-egress-controller/provider"
+	"github.com/szuecs/kube-static-egress-controller/provider/aws"
+	"github.com/szuecs/kube-static-egress-controller/provider/noop"
 	kingpin "gopkg.in/alecthomas/kingpin.v2"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -62,6 +62,18 @@ var defaultConfig = &Config{
 
 func NewConfig() *Config {
 	return &Config{}
+}
+
+func newProvider(dry bool, name string, natCidrBlocks, availabilityZones []string, StackTerminationProtection bool) provider.Provider {
+	switch name {
+	case aws.ProviderName:
+		return aws.NewAwsProvider(dry, natCidrBlocks, availabilityZones, StackTerminationProtection)
+	case noop.ProviderName:
+		return noop.NewNoopProvider()
+	default:
+		log.Fatalf("Unkown provider: %s", name)
+	}
+	return nil
 }
 
 func allLogLevelsAsStrings() []string {
@@ -125,7 +137,7 @@ func main() {
 	log.SetLevel(ll)
 	log.Debugf("config: %+v", cfg)
 
-	p := provider.NewProvider(cfg.DryRun, cfg.Provider, cfg.NatCidrBlocks, cfg.AvailabilityZones, cfg.StackTerminationProtection)
+	p := newProvider(cfg.DryRun, cfg.Provider, cfg.NatCidrBlocks, cfg.AvailabilityZones, cfg.StackTerminationProtection)
 	run(newKubeClient(), p)
 }
 
@@ -270,8 +282,16 @@ func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []st
 				bootstrap = false
 				continue
 			}
-
 			var err error
+			createNotify := func(err error, t time.Duration) {
+				switch errors.Cause(err).(type) {
+				case *provider.AlreadyExistsError:
+					err = p.Update(output)
+					if err != nil {
+						log.Error(err)
+					}
+				}
+			}
 			if len(input) == 0 { // not caused by faulty value in CIDR string
 				if !sameValues(resultCache, output) {
 					resultCache = output
@@ -287,7 +307,7 @@ func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []st
 						createFunc := func() error {
 							return p.Create(output)
 						}
-						err = backoff.Retry(createFunc, retry)
+						err = backoff.RetryNotify(createFunc, retry, createNotify)
 						if err != nil {
 							log.Error(err)
 						}
@@ -295,19 +315,17 @@ func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []st
 						err = p.Update(output)
 						// create if stack does not exist, but we have targets
 						if err != nil {
-							switch e := errors.Cause(err).(type) {
-							case awserr.Error:
-								log.Infof("%s | %s | %s", e.Code(), e.Message(), e.OrigErr())
-								if strings.Contains(e.Message(), "does not exist") {
-									err = p.Create(output)
-									createFunc := func() error {
-										return p.Create(output)
-									}
-									err = backoff.Retry(createFunc, retry)
-									if err != nil {
-										log.Error(err)
-									}
+							switch errors.Cause(err).(type) {
+							case *provider.DoesNotExistError:
+								createFunc := func() error {
+									return p.Create(output)
 								}
+								err = backoff.RetryNotify(createFunc, retry, createNotify)
+								if err != nil {
+									log.Error(err)
+								}
+							default:
+								log.Errorf("Failed to update stack: %v", err)
 							}
 						}
 					}
