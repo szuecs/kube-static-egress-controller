@@ -31,6 +31,7 @@ const (
 
 type AwsProvider struct {
 	dry                        bool
+	vpcID                      string
 	natCidrBlocks              []string
 	availabilityZones          []string
 	cloudformation             cloudformationiface.CloudFormationAPI
@@ -38,14 +39,15 @@ type AwsProvider struct {
 	stackTerminationProtection bool
 }
 
-func NewAwsProvider(dry bool, natCidrBlocks, availabilityZones []string, stackTerminationProtection bool) *AwsProvider {
+func NewAwsProvider(dry bool, vpcID string, natCidrBlocks, availabilityZones []string, stackTerminationProtection bool) *AwsProvider {
 	p := defaultConfigProvider()
 	return &AwsProvider{
-		dry:               dry,
-		natCidrBlocks:     natCidrBlocks,
-		availabilityZones: availabilityZones,
-		cloudformation:    cloudformation.New(p),
-		ec2:               ec2.New(p),
+		dry:                        dry,
+		vpcID:                      vpcID,
+		natCidrBlocks:              natCidrBlocks,
+		availabilityZones:          availabilityZones,
+		cloudformation:             cloudformation.New(p),
+		ec2:                        ec2.New(p),
 		stackTerminationProtection: stackTerminationProtection,
 	}
 }
@@ -62,18 +64,9 @@ func (p *AwsProvider) generateStackSpec(nets []string) (stackSpec, error) {
 		stackTerminationProtection: p.stackTerminationProtection,
 	}
 
-	//get VPC
-	vpcs, err := p.getVpcID()
-	log.Debugf("%s: vpcs(%d)", p, len(vpcs))
+	vpcID, err := p.findVPC()
 	if err != nil {
 		return spec, err
-	}
-
-	//get vpc ID from default vpc
-	for _, vpc := range vpcs {
-		if aws.BoolValue(vpc.IsDefault) {
-			spec.vpcID = aws.StringValue(vpc.VpcId)
-		}
 	}
 
 	//get assigned internet gateway
@@ -104,6 +97,32 @@ func (p *AwsProvider) generateStackSpec(nets []string) (stackSpec, error) {
 		}
 	}
 	return spec, nil
+}
+
+func (p *AwsProvider) findVPC() (string, error) {
+	// provided by the user
+	if p.vpcID != "" {
+		return p.vpcID, nil
+	}
+
+	vpcs, err := p.getVpcID()
+	log.Debugf("%s: vpcs(%d)", p, len(vpcs))
+	if err != nil {
+		return "", err
+	}
+
+	if len(vpcs) == 1 {
+		return vpcs[0].VpcId, nil
+	}
+
+	for _, vpc := range vpcs {
+		if aws.BoolValue(vpc.IsDefault) {
+			defaultVPC = aws.StringValue(vpc.VpcId)
+			return defaultVPC, nil
+		}
+	}
+
+	return "", fmt.Errorf("VPC not found")
 }
 
 func (p *AwsProvider) Create(nets []string) error {
