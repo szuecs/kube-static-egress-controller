@@ -105,7 +105,7 @@ Example:
 	app.Flag("master", "The Kubernetes API server to connect to (default: auto-detect)").Default(defaultConfig.Master).StringVar(&cfg.Master)
 	app.Flag("kubeconfig", "Retrieve target cluster configuration from a Kubernetes configuration file (default: auto-detect)").Default(defaultConfig.KubeConfig).StringVar(&cfg.KubeConfig)
 	app.Flag("provider", "Provider implementing static egress <noop|aws> (default: auto-detect)").Default(defaultConfig.Provider).StringVar(&cfg.Provider)
-	app.Flag("vpc-id", "VPC ID (default: auto-detect)").Default(defaultconfig.VPCID).StringVar(&cfg.VPCID)
+	app.Flag("vpc-id", "VPC ID (default: auto-detect)").Default(defaultConfig.VPCID).StringVar(&cfg.VPCID)
 	app.Flag("aws-nat-cidr-block", "AWS Provider requires to specify NAT-CIDR-Blocks for each AZ to have a NAT gateway in. Each should be a small network having only the NAT GW").StringsVar(&cfg.NatCidrBlocks)
 	app.Flag("aws-az", "AWS Provider requires to specify all AZs to have a NAT gateway in.").StringsVar(&cfg.AvailabilityZones)
 	app.Flag("stack-termination-protection", "Enables AWS clouformation stack termination protection for the stacks managed by the controller.").BoolVar(&cfg.StackTerminationProtection)
@@ -280,7 +280,6 @@ func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []st
 			})
 
 			if bootstrap {
-				resultCache = output
 				log.Infof("Provider(%s): bootstrapped", p)
 				bootstrap = false
 				continue

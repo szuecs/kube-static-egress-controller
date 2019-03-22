@@ -56,8 +56,8 @@ func (p AwsProvider) String() string {
 	return ProviderName
 }
 
-func (p *AwsProvider) generateStackSpec(nets []string) (stackSpec, error) {
-	spec := stackSpec{
+func (p *AwsProvider) generateStackSpec(nets []string) (*stackSpec, error) {
+	spec := &stackSpec{
 		template:                   p.generateTemplate(nets),
 		tableID:                    make(map[string]string),
 		timeoutInMinutes:           10,
@@ -66,14 +66,19 @@ func (p *AwsProvider) generateStackSpec(nets []string) (stackSpec, error) {
 
 	vpcID, err := p.findVPC()
 	if err != nil {
-		return spec, err
+		return nil, err
 	}
+	spec.vpcID = vpcID
 
 	//get assigned internet gateway
 	igw, err := p.getInternetGatewayId(spec.vpcID)
 	log.Debugf("%s: igw(%d)", p, len(igw))
 	if err != nil {
-		return spec, err
+		return nil, err
+	}
+
+	if len(igw) == 0 {
+		return nil, fmt.Errorf("no Internet Gateways found")
 	}
 
 	//get first internet gateway ID
@@ -84,7 +89,7 @@ func (p *AwsProvider) generateStackSpec(nets []string) (stackSpec, error) {
 	rt, err := p.getRouteTables(spec.vpcID)
 	log.Debugf("%s: rt(%d)", p, len(rt))
 	if err != nil {
-		return spec, err
+		return nil, err
 	}
 
 	// adding route tables to spec
@@ -112,13 +117,12 @@ func (p *AwsProvider) findVPC() (string, error) {
 	}
 
 	if len(vpcs) == 1 {
-		return vpcs[0].VpcId, nil
+		return aws.StringValue(vpcs[0].VpcId), nil
 	}
 
 	for _, vpc := range vpcs {
 		if aws.BoolValue(vpc.IsDefault) {
-			defaultVPC = aws.StringValue(vpc.VpcId)
-			return defaultVPC, nil
+			return aws.StringValue(vpc.VpcId), nil
 		}
 	}
 
@@ -132,7 +136,7 @@ func (p *AwsProvider) Create(nets []string) error {
 		return errors.Wrap(err, "failed to generate spec for create")
 	}
 
-	stackID, err := p.createCFStack(nets, &spec)
+	stackID, err := p.createCFStack(nets, spec)
 	if err != nil {
 		return errors.Wrap(err, "failed to create CF stack")
 	}
@@ -147,7 +151,7 @@ func (p *AwsProvider) Update(nets []string) error {
 		return errors.Wrap(err, "failed to generate spec for update")
 	}
 
-	stackID, err := p.updateCFStack(nets, &spec)
+	stackID, err := p.updateCFStack(nets, spec)
 	if err != nil {
 		return errors.Wrap(err, "failed to update CF stack")
 	}
