@@ -28,7 +28,7 @@ build/linux/$(BINARY): $(SOURCES)
 build.push: build.docker
 	docker push "$(IMAGE):$(VERSION)"
 
-build.docker:
+build.docker: build.linux
 	docker build --rm --tag "$(IMAGE):$(VERSION)" .
 
 clean:
