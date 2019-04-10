@@ -368,6 +368,8 @@ func (p *AwsProvider) createCFStack(nets []string, spec *stackSpec) (string, err
 			if awsErr, ok := err.(awserr.Error); ok {
 				if strings.Contains(awsErr.Message(), "does not exist") {
 					err = provider.NewDoesNotExistError(fmt.Sprintf("%s does not exist", stackName))
+				} else if awsErr.Code() == "AlreadyExistsException" {
+					err = provider.NewAlreadyExistsError(fmt.Sprintf("%s AlreadyExists", stackName))
 				}
 			}
 			return spec.name, err
