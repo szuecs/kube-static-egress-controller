@@ -195,7 +195,7 @@ func run(client kubernetes.Interface, p provider.Provider) {
 
 	// quit
 	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigs, syscall.SIGTERM)
 	<-sigs
 	for i := 0; i < 3; i++ {
 		log.Infof("send quit to all %d", i)
