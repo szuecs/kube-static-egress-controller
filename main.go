@@ -220,9 +220,17 @@ func initSync(watcher *kube.ConfigMapWatcher, wg *sync.WaitGroup, mergerCH chan<
 func enterWatcher(watcher *kube.ConfigMapWatcher, wg *sync.WaitGroup, mergerCH chan<- map[string][]string) {
 	defer wg.Done()
 	defer log.Infoln("Watcher: quit")
-	err := watcher.WatchConfigMaps(mergerCH)
+	notify := func(err error, t time.Duration) {
+		log.Printf("error: %v happened at time: %v", err, t)
+	}
+	b := backoff.NewExponentialBackOff()
+	b.MaxElapsedTime = 3 * time.Minute
+	retry := func() error {
+		return watcher.WatchConfigMaps(mergerCH)
+	}
+	err := backoff.RetryNotify(retry, b, notify)
 	if err != nil {
-		log.Errorf("Watcher: Failed to enter ConfigMap watcher: %v", err)
+		log.Fatalf("Watcher: Failed to enter ConfigMap watcher: %v", err)
 	}
 }
 
