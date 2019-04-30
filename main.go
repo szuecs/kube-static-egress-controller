@@ -222,7 +222,7 @@ func enterWatcher(watcher *kube.ConfigMapWatcher, wg *sync.WaitGroup, mergerCH c
 	defer log.Infoln("Watcher: quit")
 	err := watcher.WatchConfigMaps(mergerCH)
 	if err != nil {
-		log.Fatalf("Watcher: Failed to enter ConfigMap watcher: %v", err)
+		log.Errorf("Watcher: Failed to enter ConfigMap watcher: %v", err)
 	}
 }
 
