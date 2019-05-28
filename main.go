@@ -34,6 +34,7 @@ var (
 	githash    = "unknown"
 
 	flushToProviderInterval time.Duration
+	resyncInterval          time.Duration
 )
 
 type Config struct {
@@ -110,6 +111,7 @@ Example:
 	app.Flag("aws-az", "AWS Provider requires to specify all AZs to have a NAT gateway in.").StringsVar(&cfg.AvailabilityZones)
 	app.Flag("stack-termination-protection", "Enables AWS clouformation stack termination protection for the stacks managed by the controller.").BoolVar(&cfg.StackTerminationProtection)
 	app.Flag("flush-interval", "Minimum interval to call provider on change events.").Default("5s").DurationVar(&flushToProviderInterval)
+	app.Flag("resync-interval", "Resync interval to make sure current state is actual state.").Default("30m").DurationVar(&resyncInterval)
 	app.Flag("dry-run", "When enabled, prints changes rather than actually performing them (default: disabled)").BoolVar(&cfg.DryRun)
 	app.Flag("log-level", "Set the level of logging. (default: info, options: panic, debug, info, warn, error, fatal").Default(defaultConfig.LogLevel).EnumVar(&cfg.LogLevel, allLogLevelsAsStrings()...)
 	_, err := app.Parse(args)
@@ -267,8 +269,9 @@ func enterMerger(wg *sync.WaitGroup, watcherCH <-chan map[string][]string, provi
 }
 
 func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []string, quitCH <-chan struct{}) {
-	retry := backoff.NewConstantBackOff(5 * time.Minute)
 	defer wg.Done()
+
+	retry := backoff.NewConstantBackOff(5 * time.Minute)
 	bootstrap := true
 	resultCache := make([]string, 0)
 	for {
@@ -293,15 +296,7 @@ func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []st
 				continue
 			}
 			var err error
-			createNotify := func(err error, t time.Duration) {
-				switch errors.Cause(err).(type) {
-				case *provider.AlreadyExistsError:
-					err = p.Update(output)
-					if err != nil {
-						log.Error(err)
-					}
-				}
-			}
+
 			if len(input) == 0 { // not caused by faulty value in CIDR string
 				if !sameValues(resultCache, output) {
 					resultCache = output
@@ -314,30 +309,9 @@ func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []st
 				if !sameValues(resultCache, output) {
 					log.Infof("Provider(%s): got %d targets, cached: %d", p, len(output), len(resultCache))
 					if len(resultCache) == 0 {
-						createFunc := func() error {
-							return p.Create(output)
-						}
-						err = backoff.RetryNotify(createFunc, retry, createNotify)
-						if err != nil {
-							log.Error(err)
-						}
+						create(retry, p, output)
 					} else {
-						err = p.Update(output)
-						// create if stack does not exist, but we have targets
-						if err != nil {
-							switch errors.Cause(err).(type) {
-							case *provider.DoesNotExistError:
-								createFunc := func() error {
-									return p.Create(output)
-								}
-								err = backoff.RetryNotify(createFunc, retry, createNotify)
-								if err != nil {
-									log.Error(err)
-								}
-							default:
-								log.Errorf("Failed to update stack: %v", err)
-							}
-						}
+						updateOrCreate(retry, p, output)
 					}
 					resultCache = output
 				}
@@ -348,12 +322,53 @@ func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []st
 				log.Errorf("Provider(%s): Failed to execute with %d targets (%v): %v", p, len(output), output, err)
 			}
 
+		case <-time.After(resyncInterval):
+			log.Debugf("Provider(%s): resync to current state from cache: %v", resultCache)
+			if len(resultCache) == 0 {
+				continue
+			}
+
+			updateOrCreate(retry, p, resultCache)
+
 		case <-quitCH:
 			log.Infof("Provider(%s): got quit signal", p)
 			return
 		}
 	}
 
+}
+
+func create(retry *backoff.ConstantBackOff, p provider.Provider, output []string) {
+	createNotify := func(err error, t time.Duration) {
+		switch errors.Cause(err).(type) {
+		case *provider.AlreadyExistsError:
+			err = p.Update(output)
+			if err != nil {
+				log.Error(err)
+			}
+		}
+	}
+
+	createFunc := func() error {
+		return p.Create(output)
+	}
+	err := backoff.RetryNotify(createFunc, retry, createNotify)
+	if err != nil {
+		log.Error(err)
+	}
+}
+
+func updateOrCreate(retry *backoff.ConstantBackOff, p provider.Provider, output []string) {
+	err := p.Update(output)
+	// create if stack does not exist, but we have targets
+	if err != nil {
+		switch errors.Cause(err).(type) {
+		case *provider.DoesNotExistError:
+			create(retry, p, output)
+		default:
+			log.Errorf("Failed to update stack: %v", err)
+		}
+	}
 }
 
 func sameValues(a, b []string) bool {
