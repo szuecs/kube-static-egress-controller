@@ -323,7 +323,7 @@ func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []st
 			}
 
 		case <-time.After(resyncInterval):
-			log.Debugf("Provider(%s): resync to current state from cache: %v", resultCache)
+			log.Debugf("Provider(%s): resync to current state from cache: %v", p, resultCache)
 			if len(resultCache) == 0 {
 				continue
 			}
