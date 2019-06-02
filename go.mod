@@ -10,7 +10,7 @@ require (
 	github.com/alecthomas/repr v0.0.0-20181024024818-d37bc2a10ba1 // indirect
 	github.com/alecthomas/template v0.0.0-20160405071501-a0175ee3bccc // indirect
 	github.com/alecthomas/units v0.0.0-20151022065526-2efee857e7cf // indirect
-	github.com/aws/aws-sdk-go v1.13.8
+	github.com/aws/aws-sdk-go v1.19.41
 	github.com/beorn7/perks v0.0.0-20160804104726-4c0e84591b9a // indirect
 	github.com/cenkalti/backoff v1.1.0
 	github.com/crewjam/go-cloudformation v0.0.0-20170426160047-d3183a4759da
@@ -18,7 +18,6 @@ require (
 	github.com/emicklei/go-restful v0.0.0-20170410110728-ff4f55a20633 // indirect
 	github.com/emicklei/go-restful-swagger12 v0.0.0-20170208215640-dcef7f557305 // indirect
 	github.com/ghodss/yaml v0.0.0-20150909031657-73d445a93680 // indirect
-	github.com/go-ini/ini v1.27.0 // indirect
 	github.com/go-openapi/analysis v0.0.0-20160815203709-b44dc874b601 // indirect
 	github.com/go-openapi/jsonpointer v0.0.0-20160704185906-46af16f9f7b1 // indirect
 	github.com/go-openapi/jsonreference v0.0.0-20160704190145-13c6e3589ad9 // indirect
@@ -30,7 +29,6 @@ require (
 	github.com/google/gofuzz v0.0.0-20161122191042-44d81051d367 // indirect
 	github.com/howeyc/gopass v0.0.0-20170109162249-bf9dde6d0d2c // indirect
 	github.com/imdario/mergo v0.0.0-20141206190957-6633656539c1 // indirect
-	github.com/jmespath/go-jmespath v0.0.0-20160803190731-bd40a432e4c7 // indirect
 	github.com/juju/ratelimit v0.0.0-20170523012141-5b9ff8664717 // indirect
 	github.com/kr/pretty v0.1.0 // indirect
 	github.com/linki/instrumented_http v0.2.0
@@ -47,7 +45,6 @@ require (
 	github.com/prometheus/procfs v0.0.0-20150928173926-454a56f35412 // indirect
 	github.com/sergi/go-diff v1.0.0 // indirect
 	github.com/sirupsen/logrus v1.0.3
-	github.com/smartystreets/goconvey v0.0.0-20190306220146-200a235640ff // indirect
 	github.com/spf13/pflag v0.0.0-20170130214245-9ff6c6923cff // indirect
 	github.com/stretchr/testify v1.3.0 // indirect
 	github.com/ugorji/go v0.0.0-20170107133203-ded73eae5db7 // indirect
