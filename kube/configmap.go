@@ -1,135 +1,125 @@
 package kube
 
 import (
-	"errors"
-	"fmt"
-	"time"
+	"context"
+	"net"
 
 	log "github.com/sirupsen/logrus"
-	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"github.com/szuecs/kube-static-egress-controller/provider"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
-	v1 "k8s.io/client-go/pkg/api/v1"
-)
-
-var (
-	ErrClosedChannel = errors.New("closed watch channel")
+	"k8s.io/client-go/tools/cache"
 )
 
 type ConfigMapWatcher struct {
-	client   kubernetes.Interface
-	ns       string
-	selector string
-	opts     meta_v1.ListOptions
-	quitCH   <-chan struct{}
+	client    kubernetes.Interface
+	namespace string
+	selector  fields.Selector
+	configs   chan<- provider.EgressConfig
 }
 
-func NewConfigMapWatcher(client kubernetes.Interface, ns, selector string, quitCH <-chan struct{}) (*ConfigMapWatcher, error) {
-	return &ConfigMapWatcher{
-		client:   client,
-		ns:       ns,
-		selector: selector,
-		opts:     meta_v1.ListOptions{LabelSelector: selector},
-		quitCH:   quitCH,
-	}, nil
-}
-
-type Tuple struct {
-	Key   string
-	Value string
-}
-
-func NewTuple(k, v string) Tuple {
-	return Tuple{Key: k, Value: v}
-}
-
-func (t Tuple) String() string {
-	return fmt.Sprintf("%s: %s", t.Key, t.Value)
-}
-
-func (cmw *ConfigMapWatcher) WatchConfigMaps(resultCH chan<- map[string][]string) error {
-	for {
-		err := cmw.watchConfigMaps(resultCH)
-		if err == ErrClosedChannel {
-			log.Info("closed channel event, restart watch")
-			continue
-		} else {
-			return err
-		}
-	}
-}
-func (cmw *ConfigMapWatcher) watchConfigMaps(resultCH chan<- map[string][]string) error {
-
-	w := cmw.client.CoreV1().ConfigMaps(cmw.ns)
-	opts := cmw.opts
-	opts.Watch = true
-	watcher, err := w.Watch(opts)
-	if err != nil {
-		return err
-	}
-
-	evCH := watcher.ResultChan()
-	defer log.Infoln("Watcher: stopped to watch ConfigMaps")
-
-	for {
-		log.Debug("begin for")
-		select {
-		case ev, okCH := <-evCH:
-			if !okCH {
-				return ErrClosedChannel
-			}
-			cmap, ok := ev.Object.(*v1.ConfigMap)
-			if !ok {
-				log.Errorf("Failed to cast event to ConfigMap %v %v, raw: %+v", ev.Type, ev.Object, ev)
-				res, err := cmw.client.CoreV1().ConfigMaps(cmw.ns).List(meta_v1.ListOptions{})
-				log.Infof("res: %v, err: %v", res, err)
-				return err
-			}
-			results := make(map[string][]string)
-			k := fmt.Sprintf("%s/%s", cmap.Namespace, cmap.Name)
-
-			switch ev.Type {
-			case watch.Deleted:
-				log.Infof("Watcher: ConfigMap event %s: %s", ev.Type, cmap.Name)
-				results[k] = []string{}
-			case watch.Error:
-				log.Errorf("Watcher: ConfigMap event %s: %s - ignore", ev.Type, cmap.Name)
-				time.Sleep(10 * time.Second)
-				continue
-			case watch.Added:
-				fallthrough
-			case watch.Modified:
-				results[k] = []string{}
-				log.Infof("Watcher: ConfigMap event %s: %s", ev.Type, cmap.Name)
-				for _, v := range cmap.Data {
-					results[k] = append(results[k], v)
-				}
-			}
-			log.Debugf("Watcher: got tuples: %v", results)
-			resultCH <- results
-		case <-cmw.quitCH:
-			watcher.Stop()
-			return nil
-		}
-	}
-}
-
-func (cmw *ConfigMapWatcher) ListConfigMaps() (map[string][]string, error) {
-	res := make(map[string][]string)
-	cmaps, err := cmw.listConfigMaps()
+func NewConfigMapWatcher(client kubernetes.Interface, namespace, selectorStr string, configs chan<- provider.EgressConfig) (*ConfigMapWatcher, error) {
+	selector, err := fields.ParseSelector(selectorStr)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, cmap := range cmaps.Items {
-		k := fmt.Sprintf("%s/%s", cmap.Namespace, cmap.Name)
-		for _, v := range cmap.Data {
-			res[k] = append(res[k], v)
-		}
-	}
-	return res, nil
+	return &ConfigMapWatcher{
+		client:    client,
+		namespace: namespace,
+		selector:  selector,
+		configs:   configs,
+	}, nil
 }
 
-func (cmw *ConfigMapWatcher) listConfigMaps() (*v1.ConfigMapList, error) {
-	return cmw.client.CoreV1().ConfigMaps(cmw.ns).List(cmw.opts)
+func (c *ConfigMapWatcher) Run(ctx context.Context) {
+	informer := cache.NewSharedIndexInformer(
+		&cache.ListWatch{
+			ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
+				options.LabelSelector = c.selector.String()
+				return c.client.CoreV1().ConfigMaps(c.namespace).List(options)
+			},
+			WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
+				options.LabelSelector = c.selector.String()
+				return c.client.CoreV1().ConfigMaps(c.namespace).Watch(options)
+			},
+		},
+		&v1.ConfigMap{},
+		0, // skip resync
+		cache.Indexers{},
+	)
+
+	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    c.add,
+		UpdateFunc: c.update,
+		DeleteFunc: c.del,
+	})
+
+	go informer.Run(ctx.Done())
+
+	if !cache.WaitForCacheSync(ctx.Done(), informer.HasSynced) {
+		log.Errorf("Timed out waiting for caches to sync")
+		return
+	}
+
+	log.Info("Synced ConfigMap watcher")
+}
+
+func (c *ConfigMapWatcher) add(obj interface{}) {
+	cm, ok := obj.(*v1.ConfigMap)
+	if !ok {
+		log.Errorf("Failed to get ConfigMap object")
+		return
+	}
+
+	c.configs <- configMapToEgressConfig(cm)
+}
+
+func (c *ConfigMapWatcher) update(newObj, oldObj interface{}) {
+	newCM, ok := newObj.(*v1.ConfigMap)
+	if !ok {
+		log.Errorf("Failed to get new ConfigMap object")
+		return
+	}
+
+	c.configs <- configMapToEgressConfig(newCM)
+}
+
+func (c *ConfigMapWatcher) del(obj interface{}) {
+	cm, ok := obj.(*v1.ConfigMap)
+	if !ok {
+		log.Errorf("Failed to get ConfigMap object")
+		return
+	}
+
+	c.configs <- provider.EgressConfig{
+		Resource: provider.Resource{
+			Name:      cm.Name,
+			Namespace: cm.Namespace,
+		},
+	}
+}
+
+func configMapToEgressConfig(cm *v1.ConfigMap) provider.EgressConfig {
+	ipAddresses := make(map[string]struct{})
+	for key, cidr := range cm.Data {
+		_, ipnet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			log.Errorf("Failed to parse CIDR %v from %s in ConfigMap %s/%s", cidr, key, cm.Namespace, cm.Name)
+			continue
+		}
+		ipAddresses[ipnet.String()] = struct{}{}
+	}
+
+	return provider.EgressConfig{
+		Resource: provider.Resource{
+			Name:      cm.Name,
+			Namespace: cm.Namespace,
+		},
+		IPAddresses: ipAddresses,
+	}
 }

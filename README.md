@@ -17,13 +17,11 @@ namespace to limit the usage to a given namespace.
 
 ## How it works
 
-1. list configmap by label selector to get a current list
-1. enter watch configmap by label selector goroutine to react on updates
-1. enter merge goroutine to build a sorted, uniqued list of target networks
-1. enter provider goroutine that calls provider implementations of
-Create(), Update(), Delete() to apply the rules specified by the user
-base. Apply steps will only be executed from this goroutine if a
-change was detected.
+1. watch configmap by label selector and send an event with the Egress
+   configuration to the controller loop.
+2. Store a cache of all Egress configurations observed in the cluster.
+3. Pass the stored cache to the provider to ensure the configuration is
+   applied.
 
 ## Example
 
