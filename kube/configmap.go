@@ -62,7 +62,7 @@ func (c *ConfigMapWatcher) Run(ctx context.Context) {
 	go informer.Run(ctx.Done())
 
 	if !cache.WaitForCacheSync(ctx.Done(), informer.HasSynced) {
-		log.Errorf("Timed out waiting for caches to sync")
+		log.Error("Timed out waiting for caches to sync")
 		return
 	}
 

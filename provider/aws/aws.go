@@ -596,7 +596,7 @@ func (p *AWSProvider) waitForStack(ctx context.Context, waitTime time.Duration, 
 		case cloudformation.StackStatusUpdateRollbackFailed:
 			return errUpdateRollbackFailed
 		}
-		p.logger.Debugf("Stack '%s' - [%s]", stackName, *stack.StackStatus)
+		p.logger.Debugf("Stack '%s' - [%s]", stackName, aws.StringValue(stack.StackStatus))
 
 		select {
 		case <-ctx.Done():
