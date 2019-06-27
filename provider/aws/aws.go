@@ -147,6 +147,7 @@ func configsToTags(configs map[provider.Resource]map[string]struct{}) []*cloudfo
 		for address := range ipAddresses {
 			addresses = append(addresses, address)
 		}
+		sort.Strings(addresses)
 		tag := &cloudformation.Tag{
 			Key:   aws.String(egressConfigTagPrefix + "configmap/" + config.Namespace + "/" + config.Name),
 			Value: aws.String(strings.Join(addresses, ",")),
@@ -576,7 +577,7 @@ func (p *AWSProvider) waitForStack(ctx context.Context, waitTime time.Duration, 
 		if err != nil {
 			return err
 		}
-		switch *stack.StackStatus {
+		switch aws.StringValue(stack.StackStatus) {
 		case cloudformation.StackStatusUpdateComplete:
 			return nil
 		case cloudformation.StackStatusCreateComplete:

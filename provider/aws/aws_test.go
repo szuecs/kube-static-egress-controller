@@ -1,11 +1,16 @@
 package aws
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/cloudformation"
+	"github.com/aws/aws-sdk-go/service/cloudformation/cloudformationiface"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
+	log "github.com/sirupsen/logrus"
+	"github.com/stretchr/testify/require"
 	"github.com/szuecs/kube-static-egress-controller/provider"
 )
 
@@ -112,4 +117,244 @@ func TestGenerateTemplate(t *testing.T) {
 		t.Errorf("Expect:\n %s,\n but got %s", expect, template)
 	}
 
+}
+
+type mockCloudformation struct {
+	cloudformationiface.CloudFormationAPI
+	err   error
+	stack *cloudformation.Stack
+}
+
+func (cf *mockCloudformation) DescribeStacks(*cloudformation.DescribeStacksInput) (*cloudformation.DescribeStacksOutput, error) {
+	if cf.stack != nil {
+		return &cloudformation.DescribeStacksOutput{
+			Stacks: []*cloudformation.Stack{cf.stack},
+		}, nil
+	}
+	return &cloudformation.DescribeStacksOutput{
+		Stacks: nil,
+	}, cf.err
+}
+
+func (cf *mockCloudformation) CreateStack(input *cloudformation.CreateStackInput) (*cloudformation.CreateStackOutput, error) {
+	cf.stack = &cloudformation.Stack{
+		StackStatus: aws.String(cloudformation.StackStatusCreateComplete),
+		Tags:        input.Tags,
+	}
+	return &cloudformation.CreateStackOutput{
+		StackId: aws.String(""),
+	}, cf.err
+}
+
+func (cf *mockCloudformation) UpdateStack(input *cloudformation.UpdateStackInput) (*cloudformation.UpdateStackOutput, error) {
+	cf.stack = &cloudformation.Stack{
+		StackStatus: aws.String(cloudformation.StackStatusUpdateComplete),
+		Tags:        input.Tags,
+	}
+	return &cloudformation.UpdateStackOutput{
+		StackId: aws.String(""),
+	}, cf.err
+}
+
+func (cf *mockCloudformation) UpdateTerminationProtection(*cloudformation.UpdateTerminationProtectionInput) (*cloudformation.UpdateTerminationProtectionOutput, error) {
+	return nil, cf.err
+}
+
+func (cf *mockCloudformation) DeleteStack(*cloudformation.DeleteStackInput) (*cloudformation.DeleteStackOutput, error) {
+	cf.stack = &cloudformation.Stack{
+		StackStatus: aws.String(cloudformation.StackStatusDeleteComplete),
+	}
+	return nil, cf.err
+}
+
+type mockEC2 struct {
+	ec2iface.EC2API
+	err                            error
+	describeInternetGatewaysOutput *ec2.DescribeInternetGatewaysOutput
+	describeRouteTables            *ec2.DescribeRouteTablesOutput
+}
+
+func (ec2 *mockEC2) DescribeInternetGateways(*ec2.DescribeInternetGatewaysInput) (*ec2.DescribeInternetGatewaysOutput, error) {
+	return ec2.describeInternetGatewaysOutput, ec2.err
+}
+
+func (ec2 *mockEC2) DescribeRouteTables(*ec2.DescribeRouteTablesInput) (*ec2.DescribeRouteTablesOutput, error) {
+	return ec2.describeRouteTables, ec2.err
+}
+
+func TestEnsure(tt *testing.T) {
+	for _, tc := range []struct {
+		msg     string
+		cf      *mockCloudformation
+		ec2     *mockEC2
+		configs map[provider.Resource]map[string]struct{}
+		success bool
+		stack   *cloudformation.Stack
+	}{
+		{
+			msg: "DescribeStacks failing should result in error.",
+			cf: &mockCloudformation{
+				err: errors.New("failed"),
+			},
+			success: false,
+			stack:   nil,
+		},
+		{
+			msg:     "don't do anything if the stack doesn't exist and the config is empty",
+			cf:      &mockCloudformation{},
+			success: true,
+			stack:   nil,
+		},
+		{
+			msg: "create new stack if it doesn't already exists",
+			cf:  &mockCloudformation{},
+			ec2: &mockEC2{
+				describeInternetGatewaysOutput: &ec2.DescribeInternetGatewaysOutput{
+					InternetGateways: []*ec2.InternetGateway{
+						{
+							InternetGatewayId: aws.String(""),
+						},
+					},
+				},
+				describeRouteTables: &ec2.DescribeRouteTablesOutput{
+					RouteTables: []*ec2.RouteTable{
+						{
+							RouteTableId: aws.String(""),
+						},
+					},
+				},
+			},
+			configs: map[provider.Resource]map[string]struct{}{
+				provider.Resource{
+					Name:      "a",
+					Namespace: "x",
+				}: map[string]struct{}{
+					"213.95.138.235/32": struct{}{},
+				},
+			},
+			success: true,
+			stack: &cloudformation.Stack{
+				StackStatus: aws.String(cloudformation.StackStatusCreateComplete),
+				Tags: configsToTags(map[provider.Resource]map[string]struct{}{
+					provider.Resource{
+						Name:      "a",
+						Namespace: "x",
+					}: map[string]struct{}{
+						"213.95.138.235/32": struct{}{},
+					},
+				}),
+			},
+		},
+		{
+			msg: "delete stack if there are no configs",
+			cf: &mockCloudformation{
+				stack: &cloudformation.Stack{
+					StackStatus: aws.String(cloudformation.StackStatusCreateComplete),
+				},
+			},
+			ec2: &mockEC2{
+				describeInternetGatewaysOutput: &ec2.DescribeInternetGatewaysOutput{
+					InternetGateways: []*ec2.InternetGateway{
+						{
+							InternetGatewayId: aws.String(""),
+						},
+					},
+				},
+				describeRouteTables: &ec2.DescribeRouteTablesOutput{
+					RouteTables: []*ec2.RouteTable{
+						{
+							RouteTableId: aws.String(""),
+						},
+					},
+				},
+			},
+			configs: nil,
+			success: true,
+			stack: &cloudformation.Stack{
+				StackStatus: aws.String(cloudformation.StackStatusDeleteComplete),
+			},
+		},
+		{
+			msg: "update stack if there are changes to the configs",
+			cf: &mockCloudformation{
+				stack: &cloudformation.Stack{
+					StackStatus: aws.String(cloudformation.StackStatusCreateComplete),
+					Tags: configsToTags(map[provider.Resource]map[string]struct{}{
+						provider.Resource{
+							Name:      "a",
+							Namespace: "x",
+						}: map[string]struct{}{
+							"213.95.138.235/32": struct{}{},
+						},
+					}),
+				},
+			},
+			ec2: &mockEC2{
+				describeInternetGatewaysOutput: &ec2.DescribeInternetGatewaysOutput{
+					InternetGateways: []*ec2.InternetGateway{
+						{
+							InternetGatewayId: aws.String(""),
+						},
+					},
+				},
+				describeRouteTables: &ec2.DescribeRouteTablesOutput{
+					RouteTables: []*ec2.RouteTable{
+						{
+							RouteTableId: aws.String(""),
+						},
+					},
+				},
+			},
+			configs: map[provider.Resource]map[string]struct{}{
+				provider.Resource{
+					Name:      "a",
+					Namespace: "x",
+				}: map[string]struct{}{
+					"213.95.138.235/32": struct{}{},
+					"213.95.138.236/32": struct{}{},
+				},
+			},
+			success: true,
+			stack: &cloudformation.Stack{
+				StackStatus: aws.String(cloudformation.StackStatusUpdateComplete),
+				Tags: configsToTags(map[provider.Resource]map[string]struct{}{
+					provider.Resource{
+						Name:      "a",
+						Namespace: "x",
+					}: map[string]struct{}{
+						"213.95.138.235/32": struct{}{},
+						"213.95.138.236/32": struct{}{},
+					},
+				}),
+			},
+		},
+	} {
+		tt.Run(tc.msg, func(t *testing.T) {
+			provider := &AWSProvider{
+				vpcID: "x",
+				natCidrBlocks: []string{
+					"172.31.64.0/28",
+					"172.31.64.16/28",
+					"172.31.64.32/28",
+				},
+				availabilityZones: []string{
+					"eu-central-1a",
+					"eu-central-1b",
+					"eu-central-1c",
+				},
+				cloudformation:             tc.cf,
+				ec2:                        tc.ec2,
+				stackTerminationProtection: true,
+				logger:                     log.WithFields(log.Fields{"provider": ProviderName}),
+			}
+
+			err := provider.Ensure(tc.configs)
+			if tc.success {
+				require.NoError(t, err)
+				require.Equal(t, tc.cf.stack, tc.stack)
+			} else {
+				require.Error(t, err)
+			}
+		})
+	}
 }
