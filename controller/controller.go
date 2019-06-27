@@ -44,7 +44,6 @@ func (c *EgressController) Run(ctx context.Context) {
 			if len(config.IPAddresses) == 0 {
 				delete(c.configsCache, config.Resource)
 			} else {
-				// TODO: log withfields
 				log.Infof("Observed IP Addresses %v for %v", config.IPAddresses, config.Resource)
 				c.configsCache[config.Resource] = config.IPAddresses
 			}
