@@ -1,24 +1,21 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"net"
 	"os"
 	"os/signal"
-	"sort"
-	"sync"
 	"syscall"
 	"time"
 
-	"github.com/cenkalti/backoff"
-
-	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
+	"github.com/szuecs/kube-static-egress-controller/controller"
 	"github.com/szuecs/kube-static-egress-controller/kube"
 	"github.com/szuecs/kube-static-egress-controller/provider"
 	"github.com/szuecs/kube-static-egress-controller/provider/aws"
 	"github.com/szuecs/kube-static-egress-controller/provider/noop"
 	kingpin "gopkg.in/alecthomas/kingpin.v2"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -32,9 +29,6 @@ var (
 	version    = "unknown"
 	buildstamp = "unknown"
 	githash    = "unknown"
-
-	flushToProviderInterval time.Duration
-	resyncInterval          time.Duration
 )
 
 type Config struct {
@@ -50,6 +44,8 @@ type Config struct {
 	// required by AWS provider
 	AvailabilityZones          []string
 	StackTerminationProtection bool
+	Namespace                  string
+	ResyncInterval             time.Duration
 }
 
 var defaultConfig = &Config{
@@ -61,6 +57,7 @@ var defaultConfig = &Config{
 	LogLevel:                   log.InfoLevel.String(),
 	Provider:                   "noop",
 	StackTerminationProtection: false,
+	Namespace:                  v1.NamespaceAll,
 }
 
 func NewConfig() *Config {
@@ -70,7 +67,7 @@ func NewConfig() *Config {
 func newProvider(dry bool, name, vpcID string, natCidrBlocks, availabilityZones []string, StackTerminationProtection bool) provider.Provider {
 	switch name {
 	case aws.ProviderName:
-		return aws.NewAwsProvider(dry, vpcID, natCidrBlocks, availabilityZones, StackTerminationProtection)
+		return aws.NewAWSProvider(dry, vpcID, natCidrBlocks, availabilityZones, StackTerminationProtection)
 	case noop.ProviderName:
 		return noop.NewNoopProvider()
 	default:
@@ -110,10 +107,10 @@ Example:
 	app.Flag("aws-nat-cidr-block", "AWS Provider requires to specify NAT-CIDR-Blocks for each AZ to have a NAT gateway in. Each should be a small network having only the NAT GW").StringsVar(&cfg.NatCidrBlocks)
 	app.Flag("aws-az", "AWS Provider requires to specify all AZs to have a NAT gateway in.").StringsVar(&cfg.AvailabilityZones)
 	app.Flag("stack-termination-protection", "Enables AWS clouformation stack termination protection for the stacks managed by the controller.").BoolVar(&cfg.StackTerminationProtection)
-	app.Flag("flush-interval", "Minimum interval to call provider on change events.").Default("5s").DurationVar(&flushToProviderInterval)
-	app.Flag("resync-interval", "Resync interval to make sure current state is actual state.").Default("30m").DurationVar(&resyncInterval)
+	app.Flag("resync-interval", "Resync interval to make sure current state is actual state.").Default("5m").DurationVar(&cfg.ResyncInterval)
 	app.Flag("dry-run", "When enabled, prints changes rather than actually performing them (default: disabled)").BoolVar(&cfg.DryRun)
 	app.Flag("log-level", "Set the level of logging. (default: info, options: panic, debug, info, warn, error, fatal").Default(defaultConfig.LogLevel).EnumVar(&cfg.LogLevel, allLogLevelsAsStrings()...)
+	app.Flag("namespace", "Limit controller to single namespace. (default: all namespaces").Default(defaultConfig.Namespace).StringVar(&cfg.Namespace)
 	_, err := app.Parse(args)
 	if err != nil {
 		return err
@@ -143,7 +140,20 @@ func main() {
 	log.Debugf("config: %+v", cfg)
 
 	p := newProvider(cfg.DryRun, cfg.Provider, cfg.VPCID, cfg.NatCidrBlocks, cfg.AvailabilityZones, cfg.StackTerminationProtection)
-	run(newKubeClient(), p)
+
+	configsChan := make(chan provider.EgressConfig)
+	cmWatcher, err := kube.NewConfigMapWatcher(newKubeClient(), cfg.Namespace, "egress=static", configsChan)
+	if err != nil {
+		log.Fatalf("Failed to setup ConfigMap watcher: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go handleSigterm(cancel)
+
+	go cmWatcher.Run(ctx)
+
+	controller := controller.NewEgressController(p, configsChan, cfg.ResyncInterval)
+	controller.Run(ctx)
 }
 
 // newKubeClient returns a new Kubernetes client with the default config.
@@ -167,218 +177,11 @@ func newKubeClient() kubernetes.Interface {
 	return client
 }
 
-func run(client kubernetes.Interface, p provider.Provider) {
-	quitCH := make(chan struct{})
-	var wg sync.WaitGroup
-
-	watcher, err := kube.NewConfigMapWatcher(client, "", "egress=static", quitCH)
-	if err != nil {
-		log.Fatalf("Failed to create ConfigMapWatcher: %v", err)
-	}
-
-	watchCH := make(chan map[string][]string, 2)
-
-	// init sync
-	wg.Add(1)
-	go initSync(watcher, &wg, watchCH)
-
-	// watcher
-	wg.Add(1)
-	go enterWatcher(watcher, &wg, watchCH)
-
-	// merger
-	providerCH := make(chan []string)
-	wg.Add(1)
-	go enterMerger(&wg, watchCH, providerCH, quitCH)
-
-	// Provider
-	wg.Add(1)
-	go enterProvider(&wg, p, providerCH, quitCH)
-
-	// quit
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGTERM)
-	<-sigs
-	for i := 0; i < 3; i++ {
-		log.Infof("send quit to all %d", i)
-		quitCH <- struct{}{}
-	}
-	wg.Wait()
-	log.Infoln("shutdown")
-}
-
-func initSync(watcher *kube.ConfigMapWatcher, wg *sync.WaitGroup, mergerCH chan<- map[string][]string) {
-	defer wg.Done()
-	log.Debugln("Init: get initial configmap data")
-	defer log.Infoln("Init: quit")
-	list, err := watcher.ListConfigMaps()
-	if err != nil {
-		log.Fatalf("Init: Failed to list ConfigMaps: %v", err)
-	}
-	log.Infof("Init: Bootstrap list: %v", list)
-	mergerCH <- list
-}
-
-func enterWatcher(watcher *kube.ConfigMapWatcher, wg *sync.WaitGroup, mergerCH chan<- map[string][]string) {
-	defer wg.Done()
-	defer log.Infoln("Watcher: quit")
-	notify := func(err error, t time.Duration) {
-		log.Printf("error: %v happened at time: %v", err, t)
-	}
-	b := backoff.NewExponentialBackOff()
-	b.MaxElapsedTime = 3 * time.Minute
-	retry := func() error {
-		return watcher.WatchConfigMaps(mergerCH)
-	}
-	err := backoff.RetryNotify(retry, b, notify)
-	if err != nil {
-		log.Fatalf("Watcher: Failed to enter ConfigMap watcher: %v", err)
-	}
-}
-
-func enterMerger(wg *sync.WaitGroup, watcherCH <-chan map[string][]string, providerCH chan<- []string, quitCH <-chan struct{}) {
-	defer wg.Done()
-	log.Debugln("Merger: start")
-	result := make(map[string][]string, 0)
-	for {
-		select {
-		case m := <-watcherCH:
-			for k, v := range m {
-				result[k] = v
-				log.Debugf("Merger: %s -> %v", k, v)
-			}
-
-		case <-time.After(flushToProviderInterval):
-			log.Debugf("Merger: current state: %v", result)
-			res := make([]string, 0)
-			uniquer := map[string]bool{}
-			for _, v := range result {
-				for _, s := range v {
-					if _, ok := uniquer[s]; !ok {
-						uniquer[s] = true
-						res = append(res, s)
-					}
-				}
-			}
-			providerCH <- res
-		case <-quitCH:
-			log.Infoln("Merger: got quit signal")
-			return
-		}
-	}
-}
-
-func enterProvider(wg *sync.WaitGroup, p provider.Provider, mergerCH <-chan []string, quitCH <-chan struct{}) {
-	defer wg.Done()
-
-	retry := backoff.NewConstantBackOff(5 * time.Minute)
-	bootstrap := true
-	resultCache := make([]string, 0)
-	for {
-		select {
-		case input := <-mergerCH:
-			output := make([]string, 0)
-			for _, s := range input {
-				_, ipnet, err := net.ParseCIDR(s)
-				if err != nil {
-					log.Warningf("Provider(%s): skipping not parseable CIDR: %s, err: %v", p, s, err)
-					continue
-				}
-				output = append(output, ipnet.String())
-			}
-			sort.SliceStable(output, func(i, j int) bool {
-				return output[i] < output[j]
-			})
-
-			if bootstrap {
-				log.Infof("Provider(%s): bootstrapped", p)
-				bootstrap = false
-				continue
-			}
-			var err error
-
-			if len(input) == 0 { // not caused by faulty value in CIDR string
-				if !sameValues(resultCache, output) {
-					resultCache = output
-					log.Infof("Provider(%s): no targets -> delete", p)
-					err = p.Delete()
-				} else {
-					log.Debugf("Provider(%s): Delete change was already done", p)
-				}
-			} else if len(output) > 0 {
-				if !sameValues(resultCache, output) {
-					log.Infof("Provider(%s): got %d targets, cached: %d", p, len(output), len(resultCache))
-					if len(resultCache) == 0 {
-						create(retry, p, output)
-					} else {
-						updateOrCreate(retry, p, output)
-					}
-					resultCache = output
-				}
-			} else {
-				log.Infof("Provider(%s): got no targets could be a failure -> do nothing", p)
-			}
-			if err != nil {
-				log.Errorf("Provider(%s): Failed to execute with %d targets (%v): %v", p, len(output), output, err)
-			}
-
-		case <-time.After(resyncInterval):
-			log.Debugf("Provider(%s): resync to current state from cache: %v", p, resultCache)
-			if len(resultCache) == 0 {
-				continue
-			}
-
-			updateOrCreate(retry, p, resultCache)
-
-		case <-quitCH:
-			log.Infof("Provider(%s): got quit signal", p)
-			return
-		}
-	}
-
-}
-
-func create(retry *backoff.ConstantBackOff, p provider.Provider, output []string) {
-	createNotify := func(err error, t time.Duration) {
-		switch errors.Cause(err).(type) {
-		case *provider.AlreadyExistsError:
-			err = p.Update(output)
-			if err != nil {
-				log.Error(err)
-			}
-		}
-	}
-
-	createFunc := func() error {
-		return p.Create(output)
-	}
-	err := backoff.RetryNotify(createFunc, retry, createNotify)
-	if err != nil {
-		log.Error(err)
-	}
-}
-
-func updateOrCreate(retry *backoff.ConstantBackOff, p provider.Provider, output []string) {
-	err := p.Update(output)
-	// create if stack does not exist, but we have targets
-	if err != nil {
-		switch errors.Cause(err).(type) {
-		case *provider.DoesNotExistError:
-			create(retry, p, output)
-		default:
-			log.Errorf("Failed to update stack: %v", err)
-		}
-	}
-}
-
-func sameValues(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := 0; i < len(a); i++ {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+// handleSigterm handles SIGTERM signal sent to the process.
+func handleSigterm(cancelFunc func()) {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGTERM)
+	<-signals
+	log.Info("Received Term signal. Terminating...")
+	cancelFunc()
 }

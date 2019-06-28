@@ -1,8 +1,16 @@
 package provider
 
+type Resource struct {
+	Name      string
+	Namespace string
+}
+
+type EgressConfig struct {
+	Resource
+	IPAddresses map[string]struct{}
+}
+
 type Provider interface {
-	Create([]string) error
-	Update([]string) error
-	Delete() error
+	Ensure(configs map[Resource]map[string]struct{}) error
 	String() string
 }
