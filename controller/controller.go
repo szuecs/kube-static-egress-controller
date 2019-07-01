@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -11,6 +12,7 @@ import (
 // EgressController is the controller for creating Egress configuration via a
 // provider.
 type EgressController struct {
+	mu           sync.Mutex
 	interval     time.Duration
 	configsChan  <-chan provider.EgressConfig
 	configsCache map[provider.Resource]map[string]struct{}
@@ -34,13 +36,17 @@ func (c *EgressController) Run(ctx context.Context) {
 	for {
 		select {
 		case <-time.After(interval):
+			c.mu.Lock()
 			err := c.provider.Ensure(c.configsCache)
 			if err != nil {
+				c.mu.Unlock()
 				log.Errorf("Failed to ensure configuration: %v", err)
 				continue
 			}
+			c.mu.Unlock()
 			interval = c.interval
 		case config := <-c.configsChan:
+			c.mu.Lock()
 			if len(config.IPAddresses) == 0 {
 				delete(c.configsCache, config.Resource)
 			} else {
@@ -53,6 +59,7 @@ func (c *EgressController) Run(ctx context.Context) {
 				log.Errorf("Failed to ensure configuration: %v", err)
 				continue
 			}
+			c.mu.Unlock()
 			interval = c.interval
 		case <-ctx.Done():
 			log.Info("Terminating controller loop.")
