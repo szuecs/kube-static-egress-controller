@@ -16,19 +16,21 @@ func TestControllerRun(t *testing.T) {
 
 	// test adding the an egress config.
 	ctx, cancel := context.WithCancel(context.Background())
-	go controller.Run(ctx)
 
-	configsChan <- provider.EgressConfig{
-		Resource: provider.Resource{
-			Name:      "a",
-			Namespace: "x",
-		},
-		IPAddresses: map[string]struct{}{
-			"10.0.0.1": struct{}{},
-		},
-	}
+	go func() {
+		configsChan <- provider.EgressConfig{
+			Resource: provider.Resource{
+				Name:      "a",
+				Namespace: "x",
+			},
+			IPAddresses: map[string]struct{}{
+				"10.0.0.1": struct{}{},
+			},
+		}
+		cancel()
+	}()
+	controller.Run(ctx)
 
-	cancel()
 	require.Len(t, controller.configsCache, 1)
 	require.Contains(t, controller.configsCache, provider.Resource{
 		Name:      "a",
@@ -37,15 +39,17 @@ func TestControllerRun(t *testing.T) {
 
 	// test removing the config
 	ctx, cancel = context.WithCancel(context.Background())
-	go controller.Run(ctx)
 
-	configsChan <- provider.EgressConfig{
-		Resource: provider.Resource{
-			Name:      "a",
-			Namespace: "x",
-		},
-	}
+	go func() {
+		configsChan <- provider.EgressConfig{
+			Resource: provider.Resource{
+				Name:      "a",
+				Namespace: "x",
+			},
+		}
+		cancel()
+	}()
+	controller.Run(ctx)
 
-	cancel()
 	require.Len(t, controller.configsCache, 0)
 }
