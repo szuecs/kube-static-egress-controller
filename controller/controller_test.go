@@ -9,13 +9,54 @@ import (
 	"github.com/szuecs/kube-static-egress-controller/provider/noop"
 )
 
+type mockEgressConfigSource struct {
+	configs     []provider.EgressConfig
+	configsChan <-chan provider.EgressConfig
+}
+
+func (s mockEgressConfigSource) ListConfigs() ([]provider.EgressConfig, error) {
+	return s.configs, nil
+}
+
+func (s mockEgressConfigSource) Config() <-chan provider.EgressConfig {
+	return s.configsChan
+}
+
 func TestControllerRun(t *testing.T) {
 	prov := noop.NewNoopProvider()
 	configsChan := make(chan provider.EgressConfig)
-	controller := NewEgressController(prov, configsChan, 0)
+	configSource := mockEgressConfigSource{
+		configs: []provider.EgressConfig{
+			{
+				Resource: provider.Resource{
+					Name:      "a",
+					Namespace: "y",
+				},
+				IPAddresses: map[string]struct{}{
+					"10.0.0.1": struct{}{},
+				},
+			},
+		},
+		configsChan: configsChan,
+	}
+	controller := NewEgressController(prov, configSource, 0)
 
 	// test adding the an egress config.
 	ctx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		cancel()
+	}()
+	controller.Run(ctx)
+
+	require.Len(t, controller.configsCache, 1)
+	require.Contains(t, controller.configsCache, provider.Resource{
+		Name:      "a",
+		Namespace: "y",
+	})
+
+	// test adding the an egress config.
+	ctx, cancel = context.WithCancel(context.Background())
 
 	go func() {
 		configsChan <- provider.EgressConfig{
@@ -31,7 +72,7 @@ func TestControllerRun(t *testing.T) {
 	}()
 	controller.Run(ctx)
 
-	require.Len(t, controller.configsCache, 1)
+	require.Len(t, controller.configsCache, 2)
 	require.Contains(t, controller.configsCache, provider.Resource{
 		Name:      "a",
 		Namespace: "x",
@@ -51,5 +92,5 @@ func TestControllerRun(t *testing.T) {
 	}()
 	controller.Run(ctx)
 
-	require.Len(t, controller.configsCache, 0)
+	require.Len(t, controller.configsCache, 1)
 }

@@ -19,10 +19,10 @@ type ConfigMapWatcher struct {
 	client    kubernetes.Interface
 	namespace string
 	selector  fields.Selector
-	configs   chan<- provider.EgressConfig
+	configs   chan provider.EgressConfig
 }
 
-func NewConfigMapWatcher(client kubernetes.Interface, namespace, selectorStr string, configs chan<- provider.EgressConfig) (*ConfigMapWatcher, error) {
+func NewConfigMapWatcher(client kubernetes.Interface, namespace, selectorStr string, configs chan provider.EgressConfig) (*ConfigMapWatcher, error) {
 	selector, err := fields.ParseSelector(selectorStr)
 	if err != nil {
 		return nil, err
@@ -102,6 +102,27 @@ func (c *ConfigMapWatcher) del(obj interface{}) {
 			Namespace: cm.Namespace,
 		},
 	}
+}
+
+func (c *ConfigMapWatcher) ListConfigs() ([]provider.EgressConfig, error) {
+	opts := metav1.ListOptions{
+		LabelSelector: c.selector.String(),
+	}
+
+	configMaps, err := c.client.CoreV1().ConfigMaps(c.namespace).List(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	configs := make([]provider.EgressConfig, 0, len(configMaps.Items))
+	for _, cm := range configMaps.Items {
+		configs = append(configs, configMapToEgressConfig(&cm))
+	}
+	return configs, nil
+}
+
+func (c *ConfigMapWatcher) Config() <-chan provider.EgressConfig {
+	return c.configs
 }
 
 func configMapToEgressConfig(cm *v1.ConfigMap) provider.EgressConfig {
