@@ -79,7 +79,7 @@ func (c *ConfigMapWatcher) add(obj interface{}) {
 	c.configs <- configMapToEgressConfig(cm)
 }
 
-func (c *ConfigMapWatcher) update(newObj, oldObj interface{}) {
+func (c *ConfigMapWatcher) update(oldObj, newObj interface{}) {
 	newCM, ok := newObj.(*v1.ConfigMap)
 	if !ok {
 		log.Errorf("Failed to get new ConfigMap object")
@@ -130,7 +130,7 @@ func configMapToEgressConfig(cm *v1.ConfigMap) provider.EgressConfig {
 	for key, cidr := range cm.Data {
 		_, ipnet, err := net.ParseCIDR(cidr)
 		if err != nil {
-			log.Errorf("Failed to parse CIDR %v from %s in ConfigMap %s/%s", cidr, key, cm.Namespace, cm.Name)
+			log.Errorf("Failed to parse CIDR '%s' from '%s' in ConfigMap %s/%s", cidr, key, cm.Namespace, cm.Name)
 			continue
 		}
 		ipAddresses[ipnet.String()] = struct{}{}
