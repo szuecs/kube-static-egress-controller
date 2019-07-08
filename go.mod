@@ -8,6 +8,7 @@ require (
 	github.com/alecthomas/repr v0.0.0-20181024024818-d37bc2a10ba1 // indirect
 	github.com/alecthomas/template v0.0.0-20160405071501-a0175ee3bccc // indirect
 	github.com/alecthomas/units v0.0.0-20151022065526-2efee857e7cf // indirect
+	github.com/apparentlymart/go-cidr v1.0.0
 	github.com/aws/aws-sdk-go v1.19.41
 	github.com/beorn7/perks v0.0.0-20160804104726-4c0e84591b9a // indirect
 	github.com/crewjam/go-cloudformation v0.0.0-20170426160047-d3183a4759da

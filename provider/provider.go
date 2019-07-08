@@ -1,5 +1,7 @@
 package provider
 
+import "net"
+
 type Resource struct {
 	Name      string
 	Namespace string
@@ -7,10 +9,10 @@ type Resource struct {
 
 type EgressConfig struct {
 	Resource
-	IPAddresses map[string]struct{}
+	IPAddresses map[string]*net.IPNet
 }
 
 type Provider interface {
-	Ensure(configs map[Resource]map[string]struct{}) error
+	Ensure(configs map[Resource]map[string]*net.IPNet) error
 	String() string
 }

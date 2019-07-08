@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"net"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -18,7 +19,7 @@ type EgressConfigSource interface {
 type EgressController struct {
 	interval         time.Duration
 	configSource     EgressConfigSource
-	configsCache     map[provider.Resource]map[string]struct{}
+	configsCache     map[provider.Resource]map[string]*net.IPNet
 	provider         provider.Provider
 	cacheInitialized bool
 }
@@ -29,7 +30,7 @@ func NewEgressController(prov provider.Provider, configSource EgressConfigSource
 		interval:     interval,
 		provider:     prov,
 		configSource: configSource,
-		configsCache: make(map[provider.Resource]map[string]struct{}),
+		configsCache: make(map[provider.Resource]map[string]*net.IPNet),
 	}
 }
 

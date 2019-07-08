@@ -2,6 +2,7 @@ package aws
 
 import (
 	"errors"
+	"net"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -38,14 +39,15 @@ func TestGenerateStackSpec(t *testing.T) {
 	expectedInternetGatewayId := "igw-1111"
 	expectedRouteTableId := "rtb-1111"
 
+	_, netA, _ := net.ParseCIDR("213.95.138.236/32")
 	natCidrBlocks := []string{"172.31.64.0/28"}
 	availabilityZones := []string{"eu-central-1a"}
-	destinationCidrBlocks := map[provider.Resource]map[string]struct{}{
+	destinationCidrBlocks := map[provider.Resource]map[string]*net.IPNet{
 		provider.Resource{
 			Name:      "x",
 			Namespace: "y",
-		}: map[string]struct{}{
-			"213.95.138.236/32": struct{}{},
+		}: map[string]*net.IPNet{
+			netA.String(): netA,
 		},
 	}
 	p := NewAWSProvider(true, "", natCidrBlocks, availabilityZones, false)
@@ -100,14 +102,15 @@ func TestGenerateStackSpec(t *testing.T) {
 }
 
 func TestGenerateTemplate(t *testing.T) {
+	_, netA, _ := net.ParseCIDR("213.95.138.236/32")
 	natCidrBlocks := []string{"172.31.64.0/28"}
 	availabilityZones := []string{"eu-central-1a"}
-	destinationCidrBlocks := map[provider.Resource]map[string]struct{}{
+	destinationCidrBlocks := map[provider.Resource]map[string]*net.IPNet{
 		provider.Resource{
 			Name:      "x",
 			Namespace: "y",
-		}: map[string]struct{}{
-			"213.95.138.236/32": struct{}{},
+		}: map[string]*net.IPNet{
+			netA.String(): netA,
 		},
 	}
 	p := NewAWSProvider(true, "", natCidrBlocks, availabilityZones, false)
@@ -183,11 +186,14 @@ func (ec2 *mockEC2) DescribeRouteTables(*ec2.DescribeRouteTablesInput) (*ec2.Des
 }
 
 func TestEnsure(tt *testing.T) {
+	_, netA, _ := net.ParseCIDR("213.95.138.235/32")
+	_, netB, _ := net.ParseCIDR("213.95.138.236/32")
+
 	for _, tc := range []struct {
 		msg     string
 		cf      *mockCloudformation
 		ec2     *mockEC2
-		configs map[provider.Resource]map[string]struct{}
+		configs map[provider.Resource]map[string]*net.IPNet
 		success bool
 		stack   *cloudformation.Stack
 	}{
@@ -224,23 +230,23 @@ func TestEnsure(tt *testing.T) {
 					},
 				},
 			},
-			configs: map[provider.Resource]map[string]struct{}{
+			configs: map[provider.Resource]map[string]*net.IPNet{
 				provider.Resource{
 					Name:      "a",
 					Namespace: "x",
-				}: map[string]struct{}{
-					"213.95.138.235/32": struct{}{},
+				}: map[string]*net.IPNet{
+					netA.String(): netA,
 				},
 			},
 			success: true,
 			stack: &cloudformation.Stack{
 				StackStatus: aws.String(cloudformation.StackStatusCreateComplete),
-				Tags: configsToTags(map[provider.Resource]map[string]struct{}{
+				Tags: configsToTags(map[provider.Resource]map[string]*net.IPNet{
 					provider.Resource{
 						Name:      "a",
 						Namespace: "x",
-					}: map[string]struct{}{
-						"213.95.138.235/32": struct{}{},
+					}: map[string]*net.IPNet{
+						netA.String(): netA,
 					},
 				}),
 			},
@@ -279,12 +285,12 @@ func TestEnsure(tt *testing.T) {
 			cf: &mockCloudformation{
 				stack: &cloudformation.Stack{
 					StackStatus: aws.String(cloudformation.StackStatusCreateComplete),
-					Tags: configsToTags(map[provider.Resource]map[string]struct{}{
+					Tags: configsToTags(map[provider.Resource]map[string]*net.IPNet{
 						provider.Resource{
 							Name:      "a",
 							Namespace: "x",
-						}: map[string]struct{}{
-							"213.95.138.235/32": struct{}{},
+						}: map[string]*net.IPNet{
+							netA.String(): netA,
 						},
 					}),
 				},
@@ -305,25 +311,25 @@ func TestEnsure(tt *testing.T) {
 					},
 				},
 			},
-			configs: map[provider.Resource]map[string]struct{}{
+			configs: map[provider.Resource]map[string]*net.IPNet{
 				provider.Resource{
 					Name:      "a",
 					Namespace: "x",
-				}: map[string]struct{}{
-					"213.95.138.235/32": struct{}{},
-					"213.95.138.236/32": struct{}{},
+				}: map[string]*net.IPNet{
+					netA.String(): netA,
+					netB.String(): netB,
 				},
 			},
 			success: true,
 			stack: &cloudformation.Stack{
 				StackStatus: aws.String(cloudformation.StackStatusUpdateComplete),
-				Tags: configsToTags(map[provider.Resource]map[string]struct{}{
+				Tags: configsToTags(map[provider.Resource]map[string]*net.IPNet{
 					provider.Resource{
 						Name:      "a",
 						Namespace: "x",
-					}: map[string]struct{}{
-						"213.95.138.235/32": struct{}{},
-						"213.95.138.236/32": struct{}{},
+					}: map[string]*net.IPNet{
+						netA.String(): netA,
+						netB.String(): netB,
 					},
 				}),
 			},
@@ -355,6 +361,57 @@ func TestEnsure(tt *testing.T) {
 			} else {
 				require.Error(t, err)
 			}
+		})
+	}
+}
+
+func TestGenerateRoutes(tt *testing.T) {
+	_, netA, _ := net.ParseCIDR("10.0.0.0/16")
+	_, netB, _ := net.ParseCIDR("10.0.0.0/17")
+	_, netC, _ := net.ParseCIDR("10.1.0.0/17")
+	// _, netB, _ := net.ParseCIDR("213.95.138.236/32")
+
+	for _, tc := range []struct {
+		msg      string
+		configs  map[provider.Resource]map[string]*net.IPNet
+		expected []string
+	}{
+		{
+			msg: "Subnet should be covered by superblock",
+			configs: map[provider.Resource]map[string]*net.IPNet{
+				provider.Resource{
+					Name:      "a",
+					Namespace: "x",
+				}: map[string]*net.IPNet{
+					netA.String(): netA,
+					netB.String(): netB,
+				},
+			},
+			expected: []string{
+				netA.String(),
+			},
+		},
+		{
+			msg: "Subnet should be covered by superblock",
+			configs: map[provider.Resource]map[string]*net.IPNet{
+				provider.Resource{
+					Name:      "a",
+					Namespace: "x",
+				}: map[string]*net.IPNet{
+					netA.String(): netA,
+					netB.String(): netB,
+					netC.String(): netC,
+				},
+			},
+			expected: []string{
+				netC.String(),
+				netA.String(),
+			},
+		},
+	} {
+		tt.Run(tc.msg, func(t *testing.T) {
+			nets := generateRoutes(tc.configs)
+			require.Equal(t, tc.expected, nets)
 		})
 	}
 }

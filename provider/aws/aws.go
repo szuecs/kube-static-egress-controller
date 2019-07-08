@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/apparentlymart/go-cidr/cidr"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/client"
@@ -75,7 +77,51 @@ func (p AWSProvider) String() string {
 	return ProviderName
 }
 
-func (p *AWSProvider) Ensure(configs map[provider.Resource]map[string]struct{}) error {
+func generateRoutes(configs map[provider.Resource]map[string]*net.IPNet) []string {
+	cidrs := make([]*net.IPNet, 0, len(configs))
+	for _, rs := range configs {
+		for _, ipnet := range rs {
+			cidrs = append(cidrs, ipnet)
+		}
+	}
+
+	sort.Slice(cidrs, func(i, j int) bool {
+		countI := cidr.AddressCount(cidrs[i])
+		countJ := cidr.AddressCount(cidrs[j])
+		if countI == countJ {
+			return cidrs[i].String() < cidrs[j].String()
+		}
+		return countI < countJ
+	})
+
+	newCIDRs := make([]string, 0, len(cidrs))
+	i := 0
+	for _, c := range cidrs {
+		contained := false
+		if i < len(cidrs)-1 {
+			for _, block := range cidrs[i+1:] {
+				if networkContained(c, block) {
+					contained = true
+					break
+				}
+			}
+		}
+
+		if !contained {
+			newCIDRs = append(newCIDRs, c.String())
+		}
+		i++
+	}
+
+	return newCIDRs
+}
+
+func networkContained(subnet, CIDRBlock *net.IPNet) bool {
+	first, last := cidr.AddressRange(subnet)
+	return CIDRBlock.Contains(first) && CIDRBlock.Contains(last)
+}
+
+func (p *AWSProvider) Ensure(configs map[provider.Resource]map[string]*net.IPNet) error {
 	params := &cloudformation.DescribeStacksInput{
 		StackName: aws.String(stackName),
 	}
@@ -140,7 +186,7 @@ func (p *AWSProvider) Ensure(configs map[provider.Resource]map[string]struct{}) 
 	return nil
 }
 
-func configsToTags(configs map[provider.Resource]map[string]struct{}) []*cloudformation.Tag {
+func configsToTags(configs map[provider.Resource]map[string]*net.IPNet) []*cloudformation.Tag {
 	tags := make([]*cloudformation.Tag, 0, len(configs))
 	for config, ipAddresses := range configs {
 		addresses := make([]string, 0, len(ipAddresses))
@@ -157,8 +203,8 @@ func configsToTags(configs map[provider.Resource]map[string]struct{}) []*cloudfo
 	return tags
 }
 
-func parseTagsToEgressConfigStore(tags []*cloudformation.Tag) map[provider.Resource]map[string]struct{} {
-	store := make(map[provider.Resource]map[string]struct{})
+func parseTagsToEgressConfigStore(tags []*cloudformation.Tag) map[provider.Resource]map[string]*net.IPNet {
+	store := make(map[provider.Resource]map[string]*net.IPNet)
 	for _, tag := range tags {
 		cfg := parseTagAsEgressConfig(tag)
 		if cfg != nil {
@@ -166,17 +212,6 @@ func parseTagsToEgressConfigStore(tags []*cloudformation.Tag) map[provider.Resou
 		}
 	}
 	return store
-}
-
-func getNetsSet(configs map[provider.Resource]map[string]struct{}) []string {
-	set := make([]string, 0, len(configs))
-	for _, ips := range configs {
-		for ip := range ips {
-			set = append(set, ip)
-		}
-	}
-	sort.Strings(set)
-	return set
 }
 
 // parseTagAsEgressConfig parses tags of the format
@@ -190,9 +225,13 @@ func parseTagAsEgressConfig(tag *cloudformation.Tag) *provider.EgressConfig {
 			return nil
 		}
 		ips := strings.Split(value, ",")
-		ipsSet := make(map[string]struct{})
+		ipsSet := make(map[string]*net.IPNet)
 		for _, ip := range ips {
-			ipsSet[ip] = struct{}{}
+			_, ipnet, err := net.ParseCIDR(ip)
+			if err != nil {
+				continue
+			}
+			ipsSet[ipnet.String()] = ipnet
 		}
 		return &provider.EgressConfig{
 			Resource: provider.Resource{
@@ -205,7 +244,7 @@ func parseTagAsEgressConfig(tag *cloudformation.Tag) *provider.EgressConfig {
 	return nil
 }
 
-func configsEqual(a, b map[provider.Resource]map[string]struct{}) bool {
+func configsEqual(a, b map[provider.Resource]map[string]*net.IPNet) bool {
 	if len(a) != len(b) {
 		return false
 	}
@@ -227,7 +266,7 @@ func configsEqual(a, b map[provider.Resource]map[string]struct{}) bool {
 	return true
 }
 
-func (p *AWSProvider) generateStackSpec(configs map[provider.Resource]map[string]struct{}) (*stackSpec, error) {
+func (p *AWSProvider) generateStackSpec(configs map[provider.Resource]map[string]*net.IPNet) (*stackSpec, error) {
 	spec := &stackSpec{
 		template:                   p.generateTemplate(configs),
 		tableID:                    make(map[string]string),
@@ -302,12 +341,8 @@ func (p *AWSProvider) findVPC() (string, error) {
 }
 
 type stackSpec struct {
-	name                       string
 	vpcID                      string
 	internetGatewayID          string
-	routeTableIDAZ1            string
-	routeTableIDAZ2            string
-	routeTableIDAZ3            string
 	tableID                    map[string]string
 	timeoutInMinutes           uint
 	template                   string
@@ -315,7 +350,7 @@ type stackSpec struct {
 	tags                       []*cloudformation.Tag
 }
 
-func (p *AWSProvider) generateTemplate(configs map[provider.Resource]map[string]struct{}) string {
+func (p *AWSProvider) generateTemplate(configs map[provider.Resource]map[string]*net.IPNet) string {
 	template := cft.NewTemplate()
 	template.Description = "Static Egress Stack"
 	template.Outputs = map[string]*cft.Output{}
@@ -328,7 +363,7 @@ func (p *AWSProvider) generateTemplate(configs map[provider.Resource]map[string]
 		Type:        "String",
 	}
 
-	nets := getNetsSet(configs)
+	nets := generateRoutes(configs)
 
 	for i, net := range nets {
 		template.Parameters[fmt.Sprintf("DestinationCidrBlock%d", i+1)] = &cft.Parameter{

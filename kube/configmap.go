@@ -126,14 +126,14 @@ func (c *ConfigMapWatcher) Config() <-chan provider.EgressConfig {
 }
 
 func configMapToEgressConfig(cm *v1.ConfigMap) provider.EgressConfig {
-	ipAddresses := make(map[string]struct{})
+	ipAddresses := make(map[string]*net.IPNet)
 	for key, cidr := range cm.Data {
 		_, ipnet, err := net.ParseCIDR(cidr)
 		if err != nil {
 			log.Errorf("Failed to parse CIDR '%s' from '%s' in ConfigMap %s/%s", cidr, key, cm.Namespace, cm.Name)
 			continue
 		}
-		ipAddresses[ipnet.String()] = struct{}{}
+		ipAddresses[ipnet.String()] = ipnet
 	}
 
 	return provider.EgressConfig{
