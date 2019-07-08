@@ -42,6 +42,7 @@ func (c *EgressController) Run(ctx context.Context) {
 			configs, err := c.configSource.ListConfigs()
 			if err != nil {
 				log.Errorf("Failed to list Egress configurations: %v", err)
+				time.Sleep(3 * time.Second)
 				continue
 			}
 
