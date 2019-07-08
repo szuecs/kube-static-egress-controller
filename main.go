@@ -152,7 +152,7 @@ func main() {
 
 	go cmWatcher.Run(ctx)
 
-	controller := controller.NewEgressController(p, configsChan, cfg.ResyncInterval)
+	controller := controller.NewEgressController(p, cmWatcher, cfg.ResyncInterval)
 	controller.Run(ctx)
 }
 

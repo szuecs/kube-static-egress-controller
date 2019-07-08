@@ -8,21 +8,27 @@ import (
 	"github.com/szuecs/kube-static-egress-controller/provider"
 )
 
+type EgressConfigSource interface {
+	ListConfigs() ([]provider.EgressConfig, error)
+	Config() <-chan provider.EgressConfig
+}
+
 // EgressController is the controller for creating Egress configuration via a
 // provider.
 type EgressController struct {
-	interval     time.Duration
-	configsChan  <-chan provider.EgressConfig
-	configsCache map[provider.Resource]map[string]struct{}
-	provider     provider.Provider
+	interval         time.Duration
+	configSource     EgressConfigSource
+	configsCache     map[provider.Resource]map[string]struct{}
+	provider         provider.Provider
+	cacheInitialized bool
 }
 
 // NewEgressController initializes a new EgressController.
-func NewEgressController(prov provider.Provider, configsChan <-chan provider.EgressConfig, interval time.Duration) *EgressController {
+func NewEgressController(prov provider.Provider, configSource EgressConfigSource, interval time.Duration) *EgressController {
 	return &EgressController{
 		interval:     interval,
-		configsChan:  configsChan,
 		provider:     prov,
+		configSource: configSource,
 		configsCache: make(map[provider.Resource]map[string]struct{}),
 	}
 }
@@ -30,17 +36,33 @@ func NewEgressController(prov provider.Provider, configsChan <-chan provider.Egr
 // Run runs the EgressController main loop.
 func (c *EgressController) Run(ctx context.Context) {
 	log.Info("Running controller")
-	interval := c.interval
+
 	for {
+		if !c.cacheInitialized {
+			configs, err := c.configSource.ListConfigs()
+			if err != nil {
+				log.Errorf("Failed to list Egress configurations: %v", err)
+				time.Sleep(3 * time.Second)
+				continue
+			}
+
+			c.cacheInitialized = true
+			for _, config := range configs {
+				if len(config.IPAddresses) > 0 {
+					c.configsCache[config.Resource] = config.IPAddresses
+				}
+			}
+			continue
+		}
+
 		select {
-		case <-time.After(interval):
+		case <-time.After(c.interval):
 			err := c.provider.Ensure(c.configsCache)
 			if err != nil {
 				log.Errorf("Failed to ensure configuration: %v", err)
 				continue
 			}
-			interval = c.interval
-		case config := <-c.configsChan:
+		case config := <-c.configSource.Config():
 			if len(config.IPAddresses) == 0 {
 				delete(c.configsCache, config.Resource)
 			} else {
@@ -53,7 +75,6 @@ func (c *EgressController) Run(ctx context.Context) {
 				log.Errorf("Failed to ensure configuration: %v", err)
 				continue
 			}
-			interval = c.interval
 		case <-ctx.Done():
 			log.Info("Terminating controller loop.")
 			return

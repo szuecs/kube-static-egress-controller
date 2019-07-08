@@ -1,22 +1,19 @@
-os:
-- linux
-
 language: go
 
 go:
-- 1.x
+- "1.12.x"
 - tip
 
 matrix:
   allow_failures:
   - go: tip
 
-before_install:
-- go get github.com/Masterminds/glide
+env:
+- GO111MODULE=on
 
-install:
-- glide install --strip-vendor
+before_install:
+- go get honnef.co/go/tools/cmd/staticcheck
 
 script:
-- make
+- make build.docker
 - make test

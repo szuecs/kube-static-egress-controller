@@ -19,10 +19,10 @@ type ConfigMapWatcher struct {
 	client    kubernetes.Interface
 	namespace string
 	selector  fields.Selector
-	configs   chan<- provider.EgressConfig
+	configs   chan provider.EgressConfig
 }
 
-func NewConfigMapWatcher(client kubernetes.Interface, namespace, selectorStr string, configs chan<- provider.EgressConfig) (*ConfigMapWatcher, error) {
+func NewConfigMapWatcher(client kubernetes.Interface, namespace, selectorStr string, configs chan provider.EgressConfig) (*ConfigMapWatcher, error) {
 	selector, err := fields.ParseSelector(selectorStr)
 	if err != nil {
 		return nil, err
@@ -79,7 +79,7 @@ func (c *ConfigMapWatcher) add(obj interface{}) {
 	c.configs <- configMapToEgressConfig(cm)
 }
 
-func (c *ConfigMapWatcher) update(newObj, oldObj interface{}) {
+func (c *ConfigMapWatcher) update(oldObj, newObj interface{}) {
 	newCM, ok := newObj.(*v1.ConfigMap)
 	if !ok {
 		log.Errorf("Failed to get new ConfigMap object")
@@ -104,12 +104,33 @@ func (c *ConfigMapWatcher) del(obj interface{}) {
 	}
 }
 
+func (c *ConfigMapWatcher) ListConfigs() ([]provider.EgressConfig, error) {
+	opts := metav1.ListOptions{
+		LabelSelector: c.selector.String(),
+	}
+
+	configMaps, err := c.client.CoreV1().ConfigMaps(c.namespace).List(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	configs := make([]provider.EgressConfig, 0, len(configMaps.Items))
+	for _, cm := range configMaps.Items {
+		configs = append(configs, configMapToEgressConfig(&cm))
+	}
+	return configs, nil
+}
+
+func (c *ConfigMapWatcher) Config() <-chan provider.EgressConfig {
+	return c.configs
+}
+
 func configMapToEgressConfig(cm *v1.ConfigMap) provider.EgressConfig {
 	ipAddresses := make(map[string]struct{})
 	for key, cidr := range cm.Data {
 		_, ipnet, err := net.ParseCIDR(cidr)
 		if err != nil {
-			log.Errorf("Failed to parse CIDR %v from %s in ConfigMap %s/%s", cidr, key, cm.Namespace, cm.Name)
+			log.Errorf("Failed to parse CIDR '%s' from '%s' in ConfigMap %s/%s", cidr, key, cm.Namespace, cm.Name)
 			continue
 		}
 		ipAddresses[ipnet.String()] = struct{}{}
