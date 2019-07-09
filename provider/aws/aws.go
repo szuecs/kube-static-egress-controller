@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/apparentlymart/go-cidr/cidr"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/client"
@@ -82,50 +81,6 @@ func NewAWSProvider(clusterID, controllerID string, dry bool, vpcID string, natC
 
 func (p AWSProvider) String() string {
 	return ProviderName
-}
-
-func generateRoutes(configs map[provider.Resource]map[string]*net.IPNet) []string {
-	cidrs := make([]*net.IPNet, 0, len(configs))
-	for _, rs := range configs {
-		for _, ipnet := range rs {
-			cidrs = append(cidrs, ipnet)
-		}
-	}
-
-	sort.Slice(cidrs, func(i, j int) bool {
-		countI := cidr.AddressCount(cidrs[i])
-		countJ := cidr.AddressCount(cidrs[j])
-		if countI == countJ {
-			return cidrs[i].String() < cidrs[j].String()
-		}
-		return countI < countJ
-	})
-
-	newCIDRs := make([]string, 0, len(cidrs))
-	i := 0
-	for _, c := range cidrs {
-		contained := false
-		if i < len(cidrs)-1 {
-			for _, block := range cidrs[i+1:] {
-				if networkContained(c, block) {
-					contained = true
-					break
-				}
-			}
-		}
-
-		if !contained {
-			newCIDRs = append(newCIDRs, c.String())
-		}
-		i++
-	}
-
-	return newCIDRs
-}
-
-func networkContained(subnet, CIDRBlock *net.IPNet) bool {
-	first, last := cidr.AddressRange(subnet)
-	return CIDRBlock.Contains(first) && CIDRBlock.Contains(last)
 }
 
 func (p *AWSProvider) Ensure(configs map[provider.Resource]map[string]*net.IPNet) error {
@@ -374,7 +329,7 @@ func (p *AWSProvider) generateTemplate(configs map[provider.Resource]map[string]
 		Type:        "String",
 	}
 
-	nets := generateRoutes(configs)
+	nets := provider.GenerateRoutes(configs)
 
 	for i, net := range nets {
 		template.Parameters[fmt.Sprintf("DestinationCidrBlock%d", i+1)] = &cft.Parameter{
