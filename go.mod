@@ -8,12 +8,14 @@ require (
 	github.com/alecthomas/repr v0.0.0-20181024024818-d37bc2a10ba1 // indirect
 	github.com/alecthomas/template v0.0.0-20160405071501-a0175ee3bccc // indirect
 	github.com/alecthomas/units v0.0.0-20151022065526-2efee857e7cf // indirect
+	github.com/apparentlymart/go-cidr v1.0.0
 	github.com/aws/aws-sdk-go v1.19.41
 	github.com/beorn7/perks v0.0.0-20160804104726-4c0e84591b9a // indirect
 	github.com/crewjam/go-cloudformation v0.0.0-20170426160047-d3183a4759da
 	github.com/gogo/protobuf v0.0.0-20171007142547-342cbe0a0415 // indirect
 	github.com/golang/groupcache v0.0.0-20160516000752-02826c3e7903 // indirect
 	github.com/google/gofuzz v0.0.0-20170612174753-24818f796faf // indirect
+	github.com/google/uuid v1.1.1
 	github.com/googleapis/gnostic v0.0.0-20170729233727-0c5108395e2d // indirect
 	github.com/hashicorp/golang-lru v0.5.1 // indirect
 	github.com/imdario/mergo v0.3.5 // indirect

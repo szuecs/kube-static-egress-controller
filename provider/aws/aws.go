@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 	"time"
@@ -25,12 +26,15 @@ import (
 
 const (
 	ProviderName                        = "aws"
-	stackName                           = "egress-static-nat"
+	staticLagacyStackName               = "egress-static-nat"
 	parameterVPCIDParameter             = "VPCIDParameter"
 	parameterInternetGatewayIDParameter = "InternetGatewayIDParameter"
 	tagDefaultAZKeyRouteTableID         = "AvailabilityZone"
 	tagDefaultTypeValueRouteTableID     = "dmz" // find route table by "Type" tag = "dmz"
 	egressConfigTagPrefix               = "egress-config/"
+	clusterIDTagPrefix                  = "kubernetes.io/cluster/"
+	kubernetesApplicationTagKey         = "kubernetes:application"
+	resourceLifecycleOwned              = "owned"
 	maxStackWaitTimeout                 = 15 * time.Minute
 	stackStatusCheckInterval            = 15 * time.Second
 )
@@ -46,6 +50,8 @@ var (
 )
 
 type AWSProvider struct {
+	clusterID                  string
+	controllerID               string
 	dry                        bool
 	vpcID                      string
 	natCidrBlocks              []string
@@ -56,10 +62,12 @@ type AWSProvider struct {
 	logger                     *log.Entry
 }
 
-func NewAWSProvider(dry bool, vpcID string, natCidrBlocks, availabilityZones []string, stackTerminationProtection bool) *AWSProvider {
+func NewAWSProvider(clusterID, controllerID string, dry bool, vpcID string, natCidrBlocks, availabilityZones []string, stackTerminationProtection bool) *AWSProvider {
 	// TODO: find vpcID at startup
 	p := defaultConfigProvider()
 	return &AWSProvider{
+		clusterID:                  clusterID,
+		controllerID:               controllerID,
 		dry:                        dry,
 		vpcID:                      vpcID,
 		natCidrBlocks:              natCidrBlocks,
@@ -75,19 +83,14 @@ func (p AWSProvider) String() string {
 	return ProviderName
 }
 
-func (p *AWSProvider) Ensure(configs map[provider.Resource]map[string]struct{}) error {
-	params := &cloudformation.DescribeStacksInput{
-		StackName: aws.String(stackName),
-	}
-	resp, err := p.cloudformation.DescribeStacks(params)
+func (p *AWSProvider) Ensure(configs map[provider.Resource]map[string]*net.IPNet) error {
+	stack, err := p.getEgressStack()
 	if err != nil {
-		if aerr, ok := err.(awserr.Error); !ok || aerr.Code() == cloudformation.ErrCodeStackInstanceNotFoundException {
-			return err
-		}
+		return err
 	}
 
 	// don't do anything if the stack doesn't exist and the config is empty
-	if len(configs) == 0 && len(resp.Stacks) == 0 {
+	if len(configs) == 0 && stack == nil {
 		return nil
 	}
 
@@ -97,7 +100,7 @@ func (p *AWSProvider) Ensure(configs map[provider.Resource]map[string]struct{}) 
 	}
 
 	// create new stack if it doesn't already exists
-	if len(resp.Stacks) == 0 {
+	if stack == nil {
 		p.logger.Infof("Creating CF stack with config: %v", configs)
 		err := p.createCFStack(spec)
 		if err != nil {
@@ -107,15 +110,10 @@ func (p *AWSProvider) Ensure(configs map[provider.Resource]map[string]struct{}) 
 		return nil
 	}
 
-	if len(resp.Stacks) != 1 {
-		return fmt.Errorf("found %d stacks, expected 1", len(resp.Stacks))
-	}
-
-	stack := resp.Stacks[0]
-
+	spec.name = aws.StringValue(stack.StackName)
 	if len(configs) == 0 {
 		p.logger.Info("Deleting CF stack. No egress configs")
-		err := p.deleteCFStack()
+		err := p.deleteCFStack(spec.name)
 		if err != nil {
 			return err
 		}
@@ -140,7 +138,7 @@ func (p *AWSProvider) Ensure(configs map[provider.Resource]map[string]struct{}) 
 	return nil
 }
 
-func configsToTags(configs map[provider.Resource]map[string]struct{}) []*cloudformation.Tag {
+func configsToTags(configs map[provider.Resource]map[string]*net.IPNet) []*cloudformation.Tag {
 	tags := make([]*cloudformation.Tag, 0, len(configs))
 	for config, ipAddresses := range configs {
 		addresses := make([]string, 0, len(ipAddresses))
@@ -157,8 +155,8 @@ func configsToTags(configs map[provider.Resource]map[string]struct{}) []*cloudfo
 	return tags
 }
 
-func parseTagsToEgressConfigStore(tags []*cloudformation.Tag) map[provider.Resource]map[string]struct{} {
-	store := make(map[provider.Resource]map[string]struct{})
+func parseTagsToEgressConfigStore(tags []*cloudformation.Tag) map[provider.Resource]map[string]*net.IPNet {
+	store := make(map[provider.Resource]map[string]*net.IPNet)
 	for _, tag := range tags {
 		cfg := parseTagAsEgressConfig(tag)
 		if cfg != nil {
@@ -166,17 +164,6 @@ func parseTagsToEgressConfigStore(tags []*cloudformation.Tag) map[provider.Resou
 		}
 	}
 	return store
-}
-
-func getNetsSet(configs map[provider.Resource]map[string]struct{}) []string {
-	set := make([]string, 0, len(configs))
-	for _, ips := range configs {
-		for ip := range ips {
-			set = append(set, ip)
-		}
-	}
-	sort.Strings(set)
-	return set
 }
 
 // parseTagAsEgressConfig parses tags of the format
@@ -190,9 +177,13 @@ func parseTagAsEgressConfig(tag *cloudformation.Tag) *provider.EgressConfig {
 			return nil
 		}
 		ips := strings.Split(value, ",")
-		ipsSet := make(map[string]struct{})
+		ipsSet := make(map[string]*net.IPNet)
 		for _, ip := range ips {
-			ipsSet[ip] = struct{}{}
+			_, ipnet, err := net.ParseCIDR(ip)
+			if err != nil {
+				continue
+			}
+			ipsSet[ipnet.String()] = ipnet
 		}
 		return &provider.EgressConfig{
 			Resource: provider.Resource{
@@ -205,7 +196,7 @@ func parseTagAsEgressConfig(tag *cloudformation.Tag) *provider.EgressConfig {
 	return nil
 }
 
-func configsEqual(a, b map[provider.Resource]map[string]struct{}) bool {
+func configsEqual(a, b map[provider.Resource]map[string]*net.IPNet) bool {
 	if len(a) != len(b) {
 		return false
 	}
@@ -227,14 +218,27 @@ func configsEqual(a, b map[provider.Resource]map[string]struct{}) bool {
 	return true
 }
 
-func (p *AWSProvider) generateStackSpec(configs map[provider.Resource]map[string]struct{}) (*stackSpec, error) {
+func (p *AWSProvider) generateStackSpec(configs map[provider.Resource]map[string]*net.IPNet) (*stackSpec, error) {
 	spec := &stackSpec{
+		name:                       normalizeStackName(p.clusterID),
 		template:                   p.generateTemplate(configs),
 		tableID:                    make(map[string]string),
 		timeoutInMinutes:           10,
 		stackTerminationProtection: p.stackTerminationProtection,
-		tags:                       configsToTags(configs),
 	}
+
+	tags := configsToTags(configs)
+	controllerIDTags := []*cloudformation.Tag{
+		{
+			Key:   aws.String(clusterIDTagPrefix + p.clusterID),
+			Value: aws.String(resourceLifecycleOwned),
+		},
+		{
+			Key:   aws.String(kubernetesApplicationTagKey),
+			Value: aws.String(p.controllerID),
+		},
+	}
+	spec.tags = append(tags, controllerIDTags...)
 
 	vpcID, err := p.findVPC()
 	if err != nil {
@@ -305,9 +309,6 @@ type stackSpec struct {
 	name                       string
 	vpcID                      string
 	internetGatewayID          string
-	routeTableIDAZ1            string
-	routeTableIDAZ2            string
-	routeTableIDAZ3            string
 	tableID                    map[string]string
 	timeoutInMinutes           uint
 	template                   string
@@ -315,7 +316,7 @@ type stackSpec struct {
 	tags                       []*cloudformation.Tag
 }
 
-func (p *AWSProvider) generateTemplate(configs map[provider.Resource]map[string]struct{}) string {
+func (p *AWSProvider) generateTemplate(configs map[provider.Resource]map[string]*net.IPNet) string {
 	template := cft.NewTemplate()
 	template.Description = "Static Egress Stack"
 	template.Outputs = map[string]*cft.Output{}
@@ -328,7 +329,7 @@ func (p *AWSProvider) generateTemplate(configs map[provider.Resource]map[string]
 		Type:        "String",
 	}
 
-	nets := getNetsSet(configs)
+	nets := provider.GenerateRoutes(configs)
 
 	for i, net := range nets {
 		template.Parameters[fmt.Sprintf("DestinationCidrBlock%d", i+1)] = &cft.Parameter{
@@ -424,7 +425,7 @@ func isDoesNotExistsErr(err error) bool {
 	return false
 }
 
-func (p *AWSProvider) deleteCFStack() error {
+func (p *AWSProvider) deleteCFStack(stackName string) error {
 	if p.dry {
 		p.logger.Debugf("%s: Stack to delete: %s", p, stackName)
 		return nil
@@ -467,7 +468,7 @@ func (p *AWSProvider) deleteCFStack() error {
 
 func (p *AWSProvider) updateCFStack(spec *stackSpec) error {
 	params := &cloudformation.UpdateStackInput{
-		StackName: aws.String(stackName),
+		StackName: aws.String(spec.name),
 		Parameters: []*cloudformation.Parameter{
 			cfParam(parameterVPCIDParameter, spec.vpcID),
 			cfParam(parameterInternetGatewayIDParameter, spec.internetGatewayID),
@@ -485,7 +486,7 @@ func (p *AWSProvider) updateCFStack(spec *stackSpec) error {
 		// ensure the stack termination protection is set
 		if spec.stackTerminationProtection {
 			termParams := &cloudformation.UpdateTerminationProtectionInput{
-				StackName:                   aws.String(stackName),
+				StackName:                   aws.String(spec.name),
 				EnableTerminationProtection: aws.Bool(spec.stackTerminationProtection),
 			}
 
@@ -499,7 +500,7 @@ func (p *AWSProvider) updateCFStack(spec *stackSpec) error {
 		if err != nil {
 			if awsErr, ok := err.(awserr.Error); ok {
 				if awsErr.Code() == "AlreadyExistsException" {
-					err = provider.NewAlreadyExistsError(fmt.Sprintf("%s AlreadyExists", stackName))
+					err = provider.NewAlreadyExistsError(fmt.Sprintf("%s AlreadyExists", spec.name))
 				}
 			}
 			return err
@@ -507,7 +508,7 @@ func (p *AWSProvider) updateCFStack(spec *stackSpec) error {
 
 		ctx, cancel := context.WithTimeout(context.Background(), maxStackWaitTimeout)
 		defer cancel()
-		return p.waitForStack(ctx, stackStatusCheckInterval, stackName)
+		return p.waitForStack(ctx, stackStatusCheckInterval, spec.name)
 	}
 
 	p.logger.Debugf("%s: DRY: Stack to update: %s", p, params)
@@ -517,7 +518,7 @@ func (p *AWSProvider) updateCFStack(spec *stackSpec) error {
 
 func (p *AWSProvider) createCFStack(spec *stackSpec) error {
 	params := &cloudformation.CreateStackInput{
-		StackName: aws.String(stackName),
+		StackName: aws.String(spec.name),
 		OnFailure: aws.String(cloudformation.OnFailureDelete),
 		Parameters: []*cloudformation.Parameter{
 			cfParam(parameterVPCIDParameter, spec.vpcID),
@@ -539,16 +540,16 @@ func (p *AWSProvider) createCFStack(spec *stackSpec) error {
 		if err != nil {
 			if awsErr, ok := err.(awserr.Error); ok {
 				if strings.Contains(awsErr.Message(), "does not exist") {
-					err = provider.NewDoesNotExistError(fmt.Sprintf("%s does not exist", stackName))
+					err = provider.NewDoesNotExistError(fmt.Sprintf("%s does not exist", spec.name))
 				} else if awsErr.Code() == "AlreadyExistsException" {
-					err = provider.NewAlreadyExistsError(fmt.Sprintf("%s AlreadyExists", stackName))
+					err = provider.NewAlreadyExistsError(fmt.Sprintf("%s AlreadyExists", spec.name))
 				}
 			}
 			return err
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), maxStackWaitTimeout)
 		defer cancel()
-		return p.waitForStack(ctx, stackStatusCheckInterval, stackName)
+		return p.waitForStack(ctx, stackStatusCheckInterval, spec.name)
 	}
 	p.logger.Debugf("%s: DRY: Stack to create: %s", p, params)
 	p.logger.Debugln(aws.StringValue(params.TemplateBody))
@@ -564,11 +565,58 @@ func (p *AWSProvider) getStackByName(stackName string) (*cloudformation.Stack, e
 	if err != nil {
 		return nil, err
 	}
-	//we expect only one stack
+	// we expect only one stack
 	if len(resp.Stacks) != 1 {
 		return nil, fmt.Errorf("unexpected response, got %d, expected 1 stack", len(resp.Stacks))
 	}
 	return resp.Stacks[0], nil
+}
+
+// getEgressStack gets the Egress stack by ClusterID tag or by static stack
+// name.
+func (p *AWSProvider) getEgressStack() (*cloudformation.Stack, error) {
+	tags := map[string]string{
+		clusterIDTagPrefix + p.clusterID: resourceLifecycleOwned,
+		kubernetesApplicationTagKey:      p.controllerID,
+	}
+
+	params := &cloudformation.DescribeStacksInput{}
+
+	var egressStack *cloudformation.Stack
+	err := p.cloudformation.DescribeStacksPages(params, func(resp *cloudformation.DescribeStacksOutput, lastPage bool) bool {
+		for _, stack := range resp.Stacks {
+			if cloudformationHasTags(tags, stack.Tags) || aws.StringValue(stack.StackName) == staticLagacyStackName {
+				egressStack = stack
+				return false
+			}
+		}
+		return true
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return egressStack, nil
+}
+
+// cloudformationHasTags returns true if the expected tags are found in the
+// tags list.
+func cloudformationHasTags(expected map[string]string, tags []*cloudformation.Tag) bool {
+	if len(expected) > len(tags) {
+		return false
+	}
+
+	tagsMap := make(map[string]string, len(tags))
+	for _, tag := range tags {
+		tagsMap[aws.StringValue(tag.Key)] = aws.StringValue(tag.Value)
+	}
+
+	for key, val := range expected {
+		if v, ok := tagsMap[key]; !ok || v != val {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *AWSProvider) waitForStack(ctx context.Context, waitTime time.Duration, stackName string) error {

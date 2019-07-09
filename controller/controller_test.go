@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"net"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -23,6 +24,7 @@ func (s mockEgressConfigSource) Config() <-chan provider.EgressConfig {
 }
 
 func TestControllerRun(t *testing.T) {
+	_, netA, _ := net.ParseCIDR("1.0.0.1/32")
 	prov := noop.NewNoopProvider()
 	configsChan := make(chan provider.EgressConfig)
 	configSource := mockEgressConfigSource{
@@ -32,8 +34,8 @@ func TestControllerRun(t *testing.T) {
 					Name:      "a",
 					Namespace: "y",
 				},
-				IPAddresses: map[string]struct{}{
-					"10.0.0.1": struct{}{},
+				IPAddresses: map[string]*net.IPNet{
+					netA.String(): netA,
 				},
 			},
 		},
@@ -64,8 +66,8 @@ func TestControllerRun(t *testing.T) {
 				Name:      "a",
 				Namespace: "x",
 			},
-			IPAddresses: map[string]struct{}{
-				"10.0.0.1": struct{}{},
+			IPAddresses: map[string]*net.IPNet{
+				netA.String(): netA,
 			},
 		}
 		cancel()

@@ -1,6 +1,8 @@
 package noop
 
 import (
+	"net"
+
 	log "github.com/sirupsen/logrus"
 	"github.com/szuecs/kube-static-egress-controller/provider"
 )
@@ -17,7 +19,7 @@ func (p NoopProvider) String() string {
 	return ProviderName
 }
 
-func (p *NoopProvider) Ensure(configs map[provider.Resource]map[string]struct{}) error {
+func (p *NoopProvider) Ensure(configs map[provider.Resource]map[string]*net.IPNet) error {
 	log.Infof("%s Ensure(%v)", ProviderName, configs)
 	return nil
 }

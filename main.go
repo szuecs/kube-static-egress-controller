@@ -32,13 +32,15 @@ var (
 )
 
 type Config struct {
-	Master     string
-	KubeConfig string
-	DryRun     bool
-	LogFormat  string
-	LogLevel   string
-	Provider   string
-	VPCID      string
+	Master       string
+	KubeConfig   string
+	DryRun       bool
+	LogFormat    string
+	LogLevel     string
+	Provider     string
+	VPCID        string
+	ClusterID    string
+	ControllerID string
 	// required by AWS provider
 	NatCidrBlocks []string
 	// required by AWS provider
@@ -52,6 +54,8 @@ var defaultConfig = &Config{
 	Master:                     "",
 	KubeConfig:                 "",
 	VPCID:                      "",
+	ClusterID:                  "",
+	ControllerID:               "kube-static-egress-controller",
 	DryRun:                     false,
 	LogFormat:                  "text",
 	LogLevel:                   log.InfoLevel.String(),
@@ -64,10 +68,10 @@ func NewConfig() *Config {
 	return &Config{}
 }
 
-func newProvider(dry bool, name, vpcID string, natCidrBlocks, availabilityZones []string, StackTerminationProtection bool) provider.Provider {
+func newProvider(clusterID, controllerID string, dry bool, name, vpcID string, natCidrBlocks, availabilityZones []string, StackTerminationProtection bool) provider.Provider {
 	switch name {
 	case aws.ProviderName:
-		return aws.NewAWSProvider(dry, vpcID, natCidrBlocks, availabilityZones, StackTerminationProtection)
+		return aws.NewAWSProvider(clusterID, controllerID, dry, vpcID, natCidrBlocks, availabilityZones, StackTerminationProtection)
 	case noop.ProviderName:
 		return noop.NewNoopProvider()
 	default:
@@ -103,6 +107,8 @@ Example:
 	app.Flag("master", "The Kubernetes API server to connect to (default: auto-detect)").Default(defaultConfig.Master).StringVar(&cfg.Master)
 	app.Flag("kubeconfig", "Retrieve target cluster configuration from a Kubernetes configuration file (default: auto-detect)").Default(defaultConfig.KubeConfig).StringVar(&cfg.KubeConfig)
 	app.Flag("provider", "Provider implementing static egress <noop|aws> (default: auto-detect)").Default(defaultConfig.Provider).StringVar(&cfg.Provider)
+	app.Flag("cluster-id", "Cluster ID used define ownership of Egress stack.").StringVar(&cfg.ClusterID)
+	app.Flag("controller-id", "Controller ID used to identify ownership of Egress stack.").Default(defaultConfig.ControllerID).StringVar(&cfg.ControllerID)
 	app.Flag("vpc-id", "VPC ID (default: auto-detect)").Default(defaultConfig.VPCID).StringVar(&cfg.VPCID)
 	app.Flag("aws-nat-cidr-block", "AWS Provider requires to specify NAT-CIDR-Blocks for each AZ to have a NAT gateway in. Each should be a small network having only the NAT GW").StringsVar(&cfg.NatCidrBlocks)
 	app.Flag("aws-az", "AWS Provider requires to specify all AZs to have a NAT gateway in.").StringsVar(&cfg.AvailabilityZones)
@@ -139,7 +145,7 @@ func main() {
 	log.SetLevel(ll)
 	log.Debugf("config: %+v", cfg)
 
-	p := newProvider(cfg.DryRun, cfg.Provider, cfg.VPCID, cfg.NatCidrBlocks, cfg.AvailabilityZones, cfg.StackTerminationProtection)
+	p := newProvider(cfg.ClusterID, cfg.ControllerID, cfg.DryRun, cfg.Provider, cfg.VPCID, cfg.NatCidrBlocks, cfg.AvailabilityZones, cfg.StackTerminationProtection)
 
 	configsChan := make(chan provider.EgressConfig)
 	cmWatcher, err := kube.NewConfigMapWatcher(newKubeClient(), cfg.Namespace, "egress=static", configsChan)
