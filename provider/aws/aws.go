@@ -59,10 +59,11 @@ type AWSProvider struct {
 	cloudformation             cloudformationiface.CloudFormationAPI
 	ec2                        ec2iface.EC2API
 	stackTerminationProtection bool
+	additionalStackTags        map[string]string
 	logger                     *log.Entry
 }
 
-func NewAWSProvider(clusterID, controllerID string, dry bool, vpcID string, natCidrBlocks, availabilityZones []string, stackTerminationProtection bool) *AWSProvider {
+func NewAWSProvider(clusterID, controllerID string, dry bool, vpcID string, natCidrBlocks, availabilityZones []string, stackTerminationProtection bool, additionalStackTags map[string]string) *AWSProvider {
 	// TODO: find vpcID at startup
 	p := defaultConfigProvider()
 	return &AWSProvider{
@@ -75,6 +76,7 @@ func NewAWSProvider(clusterID, controllerID string, dry bool, vpcID string, natC
 		cloudformation:             cloudformation.New(p),
 		ec2:                        ec2.New(p),
 		stackTerminationProtection: stackTerminationProtection,
+		additionalStackTags:        additionalStackTags,
 		logger:                     log.WithFields(log.Fields{"provider": ProviderName}),
 	}
 }
@@ -138,19 +140,15 @@ func (p *AWSProvider) Ensure(configs map[provider.Resource]map[string]*net.IPNet
 	return nil
 }
 
-func configsToTags(configs map[provider.Resource]map[string]*net.IPNet) []*cloudformation.Tag {
-	tags := make([]*cloudformation.Tag, 0, len(configs))
+func configsToTags(configs map[provider.Resource]map[string]*net.IPNet) map[string]string {
+	tags := make(map[string]string, len(configs))
 	for config, ipAddresses := range configs {
 		addresses := make([]string, 0, len(ipAddresses))
 		for address := range ipAddresses {
 			addresses = append(addresses, address)
 		}
 		sort.Strings(addresses)
-		tag := &cloudformation.Tag{
-			Key:   aws.String(egressConfigTagPrefix + "configmap/" + config.Namespace + "/" + config.Name),
-			Value: aws.String(strings.Join(addresses, ",")),
-		}
-		tags = append(tags, tag)
+		tags[egressConfigTagPrefix+"configmap/"+config.Namespace+"/"+config.Name] = strings.Join(addresses, ",")
 	}
 	return tags
 }
@@ -228,17 +226,9 @@ func (p *AWSProvider) generateStackSpec(configs map[provider.Resource]map[string
 	}
 
 	tags := configsToTags(configs)
-	controllerIDTags := []*cloudformation.Tag{
-		{
-			Key:   aws.String(clusterIDTagPrefix + p.clusterID),
-			Value: aws.String(resourceLifecycleOwned),
-		},
-		{
-			Key:   aws.String(kubernetesApplicationTagKey),
-			Value: aws.String(p.controllerID),
-		},
-	}
-	spec.tags = append(tags, controllerIDTags...)
+	tags[clusterIDTagPrefix+p.clusterID] = resourceLifecycleOwned
+	tags[kubernetesApplicationTagKey] = p.controllerID
+	spec.tags = tagMapToCloudformationTags(mergeTags(p.additionalStackTags, tags))
 
 	vpcID, err := p.findVPC()
 	if err != nil {
@@ -721,4 +711,26 @@ func (p *AWSProvider) getRouteTables(vpcID string) ([]*ec2.RouteTable, error) {
 		return nil, err
 	}
 	return resp.RouteTables, nil
+}
+
+func mergeTags(tags ...map[string]string) map[string]string {
+	mergedTags := make(map[string]string)
+	for _, tagMap := range tags {
+		for k, v := range tagMap {
+			mergedTags[k] = v
+		}
+	}
+	return mergedTags
+}
+
+func tagMapToCloudformationTags(tags map[string]string) []*cloudformation.Tag {
+	cfTags := make([]*cloudformation.Tag, 0, len(tags))
+	for k, v := range tags {
+		tag := &cloudformation.Tag{
+			Key:   aws.String(k),
+			Value: aws.String(v),
+		}
+		cfTags = append(cfTags, tag)
+	}
+	return cfTags
 }

@@ -46,6 +46,7 @@ type Config struct {
 	// required by AWS provider
 	AvailabilityZones          []string
 	StackTerminationProtection bool
+	AdditionalStackTags        map[string]string
 	Namespace                  string
 	ResyncInterval             time.Duration
 }
@@ -68,10 +69,10 @@ func NewConfig() *Config {
 	return &Config{}
 }
 
-func newProvider(clusterID, controllerID string, dry bool, name, vpcID string, natCidrBlocks, availabilityZones []string, StackTerminationProtection bool) provider.Provider {
+func newProvider(clusterID, controllerID string, dry bool, name, vpcID string, natCidrBlocks, availabilityZones []string, stackTerminationProtection bool, additionalStackTags map[string]string) provider.Provider {
 	switch name {
 	case aws.ProviderName:
-		return aws.NewAWSProvider(clusterID, controllerID, dry, vpcID, natCidrBlocks, availabilityZones, StackTerminationProtection)
+		return aws.NewAWSProvider(clusterID, controllerID, dry, vpcID, natCidrBlocks, availabilityZones, stackTerminationProtection, additionalStackTags)
 	case noop.ProviderName:
 		return noop.NewNoopProvider()
 	default:
@@ -113,6 +114,7 @@ Example:
 	app.Flag("aws-nat-cidr-block", "AWS Provider requires to specify NAT-CIDR-Blocks for each AZ to have a NAT gateway in. Each should be a small network having only the NAT GW").StringsVar(&cfg.NatCidrBlocks)
 	app.Flag("aws-az", "AWS Provider requires to specify all AZs to have a NAT gateway in.").StringsVar(&cfg.AvailabilityZones)
 	app.Flag("stack-termination-protection", "Enables AWS clouformation stack termination protection for the stacks managed by the controller.").BoolVar(&cfg.StackTerminationProtection)
+	app.Flag("additional-stack-tags", "Set additional custom tags on the Cloudformation Stacks managed by the controller.").StringMapVar(&cfg.AdditionalStackTags)
 	app.Flag("resync-interval", "Resync interval to make sure current state is actual state.").Default("5m").DurationVar(&cfg.ResyncInterval)
 	app.Flag("dry-run", "When enabled, prints changes rather than actually performing them (default: disabled)").BoolVar(&cfg.DryRun)
 	app.Flag("log-level", "Set the level of logging. (default: info, options: panic, debug, info, warn, error, fatal").Default(defaultConfig.LogLevel).EnumVar(&cfg.LogLevel, allLogLevelsAsStrings()...)
@@ -145,7 +147,7 @@ func main() {
 	log.SetLevel(ll)
 	log.Debugf("config: %+v", cfg)
 
-	p := newProvider(cfg.ClusterID, cfg.ControllerID, cfg.DryRun, cfg.Provider, cfg.VPCID, cfg.NatCidrBlocks, cfg.AvailabilityZones, cfg.StackTerminationProtection)
+	p := newProvider(cfg.ClusterID, cfg.ControllerID, cfg.DryRun, cfg.Provider, cfg.VPCID, cfg.NatCidrBlocks, cfg.AvailabilityZones, cfg.StackTerminationProtection, cfg.AdditionalStackTags)
 
 	configsChan := make(chan provider.EgressConfig)
 	cmWatcher, err := kube.NewConfigMapWatcher(newKubeClient(), cfg.Namespace, "egress=static", configsChan)
