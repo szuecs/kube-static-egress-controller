@@ -3,6 +3,7 @@ package aws
 import (
 	"errors"
 	"net"
+	"sort"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -42,18 +43,40 @@ func TestGenerateStackSpec(t *testing.T) {
 	_, netA, _ := net.ParseCIDR("213.95.138.236/32")
 	natCidrBlocks := []string{"172.31.64.0/28"}
 	availabilityZones := []string{"eu-central-1a"}
+	additionalStackTags := map[string]string{
+		"foo": "bar",
+	}
+	expectedTags := []*cloudformation.Tag{
+		{
+			Key:   aws.String("egress-config/configmap/y/x"),
+			Value: aws.String("213.95.138.236/32"),
+		},
+		{
+			Key:   aws.String("foo"),
+			Value: aws.String("bar"),
+		},
+		{
+			Key:   aws.String(clusterIDTagPrefix + "cluster-x"),
+			Value: aws.String(resourceLifecycleOwned),
+		},
+		{
+			Key:   aws.String(kubernetesApplicationTagKey),
+			Value: aws.String("controller-x"),
+		},
+	}
+
 	destinationCidrBlocks := map[provider.Resource]map[string]*net.IPNet{
-		provider.Resource{
+		{
 			Name:      "x",
 			Namespace: "y",
-		}: map[string]*net.IPNet{
+		}: {
 			netA.String(): netA,
 		},
 	}
-	p := NewAWSProvider("cluster-x", "controller-x", true, "", natCidrBlocks, availabilityZones, false)
+	p := NewAWSProvider("cluster-x", "controller-x", true, "", natCidrBlocks, availabilityZones, false, additionalStackTags)
 	fakeVpcsResp := ec2.DescribeVpcsOutput{
 		Vpcs: []*ec2.Vpc{
-			&ec2.Vpc{
+			{
 				VpcId:     aws.String("vpc-1111"),
 				IsDefault: aws.Bool(true),
 			},
@@ -61,18 +84,18 @@ func TestGenerateStackSpec(t *testing.T) {
 	}
 	fakeIgwResp := ec2.DescribeInternetGatewaysOutput{
 		InternetGateways: []*ec2.InternetGateway{
-			&ec2.InternetGateway{
+			{
 				InternetGatewayId: aws.String("igw-1111")},
 		},
 	}
 	fakeRouteTablesResp := ec2.DescribeRouteTablesOutput{
 		RouteTables: []*ec2.RouteTable{
-			&ec2.RouteTable{
+			{
 				VpcId:        aws.String("vpc-1111"),
 				Routes:       []*ec2.Route{},
 				RouteTableId: aws.String("rtb-1111"),
 				Tags: []*ec2.Tag{
-					&ec2.Tag{
+					{
 						Key:   aws.String(tagDefaultAZKeyRouteTableID),
 						Value: aws.String("eu-central-1a"),
 					},
@@ -99,6 +122,11 @@ func TestGenerateStackSpec(t *testing.T) {
 	if stackSpec.tableID["eu-central-1a"] != expectedRouteTableId {
 		t.Errorf("Expect: %s,\n but got %s", expectedRouteTableId, stackSpec.tableID["eu-central-1a"])
 	}
+	// sort tags to ensure stable comparison
+	sort.Slice(stackSpec.tags, func(i, j int) bool {
+		return aws.StringValue(stackSpec.tags[i].Key) < aws.StringValue(stackSpec.tags[j].Key)
+	})
+	require.EqualValues(t, expectedTags, stackSpec.tags)
 }
 
 func TestGenerateTemplate(t *testing.T) {
@@ -106,14 +134,14 @@ func TestGenerateTemplate(t *testing.T) {
 	natCidrBlocks := []string{"172.31.64.0/28"}
 	availabilityZones := []string{"eu-central-1a"}
 	destinationCidrBlocks := map[provider.Resource]map[string]*net.IPNet{
-		provider.Resource{
+		{
 			Name:      "x",
 			Namespace: "y",
-		}: map[string]*net.IPNet{
+		}: {
 			netA.String(): netA,
 		},
 	}
-	p := NewAWSProvider("cluster-x", "controller-x", true, "", natCidrBlocks, availabilityZones, false)
+	p := NewAWSProvider("cluster-x", "controller-x", true, "", natCidrBlocks, availabilityZones, false, nil)
 	expect := `{"AWSTemplateFormatVersion":"2010-09-09","Description":"Static Egress Stack","Parameters":{"AZ1RouteTableIDParameter":{"Type":"String","Description":"Route Table ID Availability Zone 1"},"DestinationCidrBlock1":{"Type":"String","Default":"213.95.138.236/32","Description":"Destination CIDR Block 1"},"InternetGatewayIDParameter":{"Type":"String","Description":"Internet Gateway ID"},"VPCIDParameter":{"Type":"AWS::EC2::VPC::Id","Description":"VPC ID"}},"Resources":{"EIP1":{"Type":"AWS::EC2::EIP","Properties":{"Domain":"vpc"}},"NATGateway1":{"Type":"AWS::EC2::NatGateway","Properties":{"AllocationId":{"Fn::GetAtt":["EIP1","AllocationId"]},"SubnetId":{"Ref":"NATSubnet1"}}},"NATSubnet1":{"Type":"AWS::EC2::Subnet","Properties":{"AvailabilityZone":"eu-central-1a","CidrBlock":"172.31.64.0/28","Tags":[{"Key":"Name","Value":"nat-eu-central-1a"}],"VpcId":{"Ref":"VPCIDParameter"}}},"NATSubnetRoute1":{"Type":"AWS::EC2::Route","Properties":{"DestinationCidrBlock":"0.0.0.0/0","GatewayId":{"Ref":"InternetGatewayIDParameter"},"RouteTableId":{"Ref":"NATSubnetRouteTable1"}}},"NATSubnetRouteTable1":{"Type":"AWS::EC2::RouteTable","Properties":{"VpcId":{"Ref":"VPCIDParameter"},"Tags":[{"Key":"Name","Value":"nat-eu-central-1a"}]}},"NATSubnetRouteTableAssociation1":{"Type":"AWS::EC2::SubnetRouteTableAssociation","Properties":{"RouteTableId":{"Ref":"NATSubnetRouteTable1"},"SubnetId":{"Ref":"NATSubnet1"}}},"RouteToNAT1z213x95x138x236y32":{"Type":"AWS::EC2::Route","Properties":{"DestinationCidrBlock":{"Ref":"DestinationCidrBlock1"},"NatGatewayId":{"Ref":"NATGateway1"},"RouteTableId":{"Ref":"AZ1RouteTableIDParameter"}}}},"Outputs":{"EIP1":{"Description":"external IP of the NATGateway1","Value":{"Ref":"EIP1"}}}}`
 	template := p.generateTemplate(destinationCidrBlocks)
 	if template != expect {
@@ -200,26 +228,26 @@ func TestEnsure(tt *testing.T) {
 	_, netB, _ := net.ParseCIDR("213.95.138.236/32")
 
 	for _, tc := range []struct {
-		msg     string
-		cf      *mockCloudformation
-		ec2     *mockEC2
-		configs map[provider.Resource]map[string]*net.IPNet
-		success bool
-		stack   *cloudformation.Stack
+		msg           string
+		cf            *mockCloudformation
+		ec2           *mockEC2
+		configs       map[provider.Resource]map[string]*net.IPNet
+		success       bool
+		expectedStack *cloudformation.Stack
 	}{
 		{
 			msg: "DescribeStacks failing should result in error.",
 			cf: &mockCloudformation{
 				err: errors.New("failed"),
 			},
-			success: false,
-			stack:   nil,
+			success:       false,
+			expectedStack: nil,
 		},
 		{
-			msg:     "don't do anything if the stack doesn't exist and the config is empty",
-			cf:      &mockCloudformation{},
-			success: true,
-			stack:   nil,
+			msg:           "don't do anything if the stack doesn't exist and the config is empty",
+			cf:            &mockCloudformation{},
+			success:       true,
+			expectedStack: nil,
 		},
 		{
 			msg: "create new stack if it doesn't already exists",
@@ -241,24 +269,24 @@ func TestEnsure(tt *testing.T) {
 				},
 			},
 			configs: map[provider.Resource]map[string]*net.IPNet{
-				provider.Resource{
+				{
 					Name:      "a",
 					Namespace: "x",
-				}: map[string]*net.IPNet{
+				}: {
 					netA.String(): netA,
 				},
 			},
 			success: true,
-			stack: &cloudformation.Stack{
+			expectedStack: &cloudformation.Stack{
 				StackStatus: aws.String(cloudformation.StackStatusCreateComplete),
-				Tags: append(configsToTags(map[provider.Resource]map[string]*net.IPNet{
-					provider.Resource{
+				Tags: append(tagMapToCloudformationTags(configsToTags(map[provider.Resource]map[string]*net.IPNet{
+					{
 						Name:      "a",
 						Namespace: "x",
-					}: map[string]*net.IPNet{
+					}: {
 						netA.String(): netA,
 					},
-				}), []*cloudformation.Tag{
+				})), []*cloudformation.Tag{
 					{
 						Key:   aws.String(clusterIDTagPrefix + "cluster-x"),
 						Value: aws.String(resourceLifecycleOwned),
@@ -305,7 +333,7 @@ func TestEnsure(tt *testing.T) {
 			},
 			configs: nil,
 			success: true,
-			stack: &cloudformation.Stack{
+			expectedStack: &cloudformation.Stack{
 				StackStatus: aws.String(cloudformation.StackStatusDeleteComplete),
 			},
 		},
@@ -314,14 +342,14 @@ func TestEnsure(tt *testing.T) {
 			cf: &mockCloudformation{
 				stack: &cloudformation.Stack{
 					StackStatus: aws.String(cloudformation.StackStatusCreateComplete),
-					Tags: append(configsToTags(map[provider.Resource]map[string]*net.IPNet{
-						provider.Resource{
+					Tags: append(tagMapToCloudformationTags(configsToTags(map[provider.Resource]map[string]*net.IPNet{
+						{
 							Name:      "a",
 							Namespace: "x",
-						}: map[string]*net.IPNet{
+						}: {
 							netA.String(): netA,
 						},
-					}), []*cloudformation.Tag{
+					})), []*cloudformation.Tag{
 						{
 							Key:   aws.String(clusterIDTagPrefix + "cluster-x"),
 							Value: aws.String(resourceLifecycleOwned),
@@ -350,26 +378,26 @@ func TestEnsure(tt *testing.T) {
 				},
 			},
 			configs: map[provider.Resource]map[string]*net.IPNet{
-				provider.Resource{
+				{
 					Name:      "a",
 					Namespace: "x",
-				}: map[string]*net.IPNet{
+				}: {
 					netA.String(): netA,
 					netB.String(): netB,
 				},
 			},
 			success: true,
-			stack: &cloudformation.Stack{
+			expectedStack: &cloudformation.Stack{
 				StackStatus: aws.String(cloudformation.StackStatusUpdateComplete),
-				Tags: append(configsToTags(map[provider.Resource]map[string]*net.IPNet{
-					provider.Resource{
+				Tags: append(tagMapToCloudformationTags(configsToTags(map[provider.Resource]map[string]*net.IPNet{
+					{
 						Name:      "a",
 						Namespace: "x",
-					}: map[string]*net.IPNet{
+					}: {
 						netA.String(): netA,
 						netB.String(): netB,
 					},
-				}), []*cloudformation.Tag{
+				})), []*cloudformation.Tag{
 					{
 						Key:   aws.String(clusterIDTagPrefix + "cluster-x"),
 						Value: aws.String(resourceLifecycleOwned),
@@ -406,7 +434,13 @@ func TestEnsure(tt *testing.T) {
 			err := provider.Ensure(tc.configs)
 			if tc.success {
 				require.NoError(t, err)
-				require.Equal(t, tc.cf.stack, tc.stack)
+				if tc.cf.stack != nil && len(tc.cf.stack.Tags) > 0 {
+					// sort tags to ensure stable comparison
+					sort.Slice(tc.cf.stack.Tags, func(i, j int) bool {
+						return aws.StringValue(tc.cf.stack.Tags[i].Key) < aws.StringValue(tc.cf.stack.Tags[j].Key)
+					})
+				}
+				require.Equal(t, tc.expectedStack, tc.cf.stack)
 			} else {
 				require.Error(t, err)
 			}
