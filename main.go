@@ -66,7 +66,9 @@ var defaultConfig = &Config{
 }
 
 func NewConfig() *Config {
-	return &Config{}
+	return &Config{
+		AdditionalStackTags: make(map[string]string),
+	}
 }
 
 func newProvider(clusterID, controllerID string, dry bool, name, vpcID string, natCidrBlocks, availabilityZones []string, stackTerminationProtection bool, additionalStackTags map[string]string) provider.Provider {

@@ -12,7 +12,9 @@ func TestNewConfig(t *testing.T) {
 	}{
 		{
 			name: "test-new-config",
-			want: &Config{},
+			want: &Config{
+				AdditionalStackTags: make(map[string]string),
+			},
 		},
 	}
 	for _, tt := range tests {
