@@ -165,7 +165,12 @@ func stringSetEqual(a, b map[string]struct{}) bool {
 // parses CIDRs from the Cloudformation template.
 func getCIDRsFromTemplate(template string) (map[string]struct{}, error) {
 	var cfTemplate struct {
-		Resources map[string]interface{}
+		Resources map[string]struct {
+			Type       string
+			Properties struct {
+				DestinationCidrBlock string
+			}
+		}
 	}
 	err := json.Unmarshal([]byte(template), &cfTemplate)
 	if err != nil {
@@ -175,15 +180,9 @@ func getCIDRsFromTemplate(template string) (map[string]struct{}, error) {
 	cidrs := make(map[string]struct{})
 	for resourceName, r := range cfTemplate.Resources {
 		if strings.HasPrefix(resourceName, "RouteToNAT") {
-			// parse CIDR from CF resource definition
-			if route, ok := r.(map[string]interface{}); ok {
-				if route["Type"] == "AWS::EC2::Route" {
-					if props, ok := route["Properties"].(map[string]interface{}); ok {
-						if cidr, ok := props["DestinationCidrBlock"].(string); ok {
-							cidrs[cidr] = struct{}{}
-						}
-					}
-				}
+			// get CIDR from CF resource definition
+			if r.Type == "AWS::EC2::Route" {
+				cidrs[r.Properties.DestinationCidrBlock] = struct{}{}
 			}
 		}
 	}
