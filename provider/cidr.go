@@ -9,7 +9,7 @@ import (
 
 // GenerateRoutes generates the minimal number of needed routes based on a set
 // of routing configurations.
-func GenerateRoutes(configs map[Resource]map[string]*net.IPNet) []string {
+func GenerateRoutes(configs map[Resource]map[string]*net.IPNet) map[string]struct{} {
 	cidrs := make([]*net.IPNet, 0, len(configs))
 	for _, rs := range configs {
 		for _, ipnet := range rs {
@@ -26,7 +26,7 @@ func GenerateRoutes(configs map[Resource]map[string]*net.IPNet) []string {
 		return countI < countJ
 	})
 
-	newCIDRs := make([]string, 0, len(cidrs))
+	newCIDRs := make(map[string]struct{}, len(cidrs))
 	i := 0
 	for _, c := range cidrs {
 		contained := false
@@ -40,7 +40,7 @@ func GenerateRoutes(configs map[Resource]map[string]*net.IPNet) []string {
 		}
 
 		if !contained {
-			newCIDRs = append(newCIDRs, c.String())
+			newCIDRs[c.String()] = struct{}{}
 		}
 		i++
 	}
