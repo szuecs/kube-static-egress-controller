@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"sort"
 	"strings"
 	"time"
 
@@ -123,10 +122,20 @@ func (p *AWSProvider) Ensure(configs map[provider.Resource]map[string]*net.IPNet
 		return nil
 	}
 
-	storedConfigs := parseTagsToEgressConfigStore(stack.Tags)
+	// get stack template body
+	templateBody, err := p.getStackTemplateBody(stack)
+	if err != nil {
+		return err
+	}
 
-	// compare configs
-	if configsEqual(storedConfigs, configs) {
+	storedCIDRs, err := getCIDRsFromTemplate(templateBody)
+	if err != nil {
+		return err
+	}
+
+	newCIDRs := provider.GenerateRoutes(configs)
+
+	if stringSetEqual(storedCIDRs, newCIDRs) {
 		return nil
 	}
 
@@ -140,80 +149,45 @@ func (p *AWSProvider) Ensure(configs map[provider.Resource]map[string]*net.IPNet
 	return nil
 }
 
-func configsToTags(configs map[provider.Resource]map[string]*net.IPNet) map[string]string {
-	tags := make(map[string]string, len(configs))
-	for config, ipAddresses := range configs {
-		addresses := make([]string, 0, len(ipAddresses))
-		for address := range ipAddresses {
-			addresses = append(addresses, address)
-		}
-		sort.Strings(addresses)
-		tags[egressConfigTagPrefix+"configmap/"+config.Namespace+"/"+config.Name] = strings.Join(addresses, ",")
-	}
-	return tags
-}
-
-func parseTagsToEgressConfigStore(tags []*cloudformation.Tag) map[provider.Resource]map[string]*net.IPNet {
-	store := make(map[provider.Resource]map[string]*net.IPNet)
-	for _, tag := range tags {
-		cfg := parseTagAsEgressConfig(tag)
-		if cfg != nil {
-			store[cfg.Resource] = cfg.IPAddresses
-		}
-	}
-	return store
-}
-
-// parseTagAsEgressConfig parses tags of the format
-// egress-config/<resource-type>/<namespace>/<name>=<ipAddress>,
-func parseTagAsEgressConfig(tag *cloudformation.Tag) *provider.EgressConfig {
-	key := aws.StringValue(tag.Key)
-	value := aws.StringValue(tag.Value)
-	if strings.HasPrefix(key, egressConfigTagPrefix) {
-		parts := strings.Split(key, "/")
-		if len(parts) != 4 {
-			return nil
-		}
-		ips := strings.Split(value, ",")
-		ipsSet := make(map[string]*net.IPNet)
-		for _, ip := range ips {
-			_, ipnet, err := net.ParseCIDR(ip)
-			if err != nil {
-				continue
-			}
-			ipsSet[ipnet.String()] = ipnet
-		}
-		return &provider.EgressConfig{
-			Resource: provider.Resource{
-				Name:      parts[3],
-				Namespace: parts[2],
-			},
-			IPAddresses: ipsSet,
-		}
-	}
-	return nil
-}
-
-func configsEqual(a, b map[provider.Resource]map[string]*net.IPNet) bool {
+func stringSetEqual(a, b map[string]struct{}) bool {
 	if len(a) != len(b) {
 		return false
 	}
 
-	for aKey, aIPs := range a {
-		bIPs, ok := b[aKey]
-		if !ok {
+	for ak := range a {
+		if _, ok := b[ak]; !ok {
 			return false
-		}
-		if len(aIPs) != len(bIPs) {
-			return false
-		}
-		for aIP := range aIPs {
-			if _, ok := bIPs[aIP]; !ok {
-				return false
-			}
 		}
 	}
 	return true
+}
+
+// parses CIDRs from the Cloudformation template.
+func getCIDRsFromTemplate(template string) (map[string]struct{}, error) {
+	var cfTemplate struct {
+		Resources map[string]struct {
+			Type       string
+			Properties struct {
+				DestinationCidrBlock string
+			}
+		}
+	}
+	err := json.Unmarshal([]byte(template), &cfTemplate)
+	if err != nil {
+		return nil, err
+	}
+
+	cidrs := make(map[string]struct{})
+	for resourceName, r := range cfTemplate.Resources {
+		if strings.HasPrefix(resourceName, "RouteToNAT") {
+			// get CIDR from CF resource definition
+			if r.Type == "AWS::EC2::Route" {
+				cidrs[r.Properties.DestinationCidrBlock] = struct{}{}
+			}
+		}
+	}
+
+	return cidrs, nil
 }
 
 func (p *AWSProvider) generateStackSpec(configs map[provider.Resource]map[string]*net.IPNet) (*stackSpec, error) {
@@ -225,9 +199,10 @@ func (p *AWSProvider) generateStackSpec(configs map[provider.Resource]map[string
 		stackTerminationProtection: p.stackTerminationProtection,
 	}
 
-	tags := configsToTags(configs)
-	tags[clusterIDTagPrefix+p.clusterID] = resourceLifecycleOwned
-	tags[kubernetesApplicationTagKey] = p.controllerID
+	tags := map[string]string{
+		clusterIDTagPrefix + p.clusterID: resourceLifecycleOwned,
+		kubernetesApplicationTagKey:      p.controllerID,
+	}
 	spec.tags = tagMapToCloudformationTags(mergeTags(p.additionalStackTags, tags))
 
 	vpcID, err := p.findVPC()
@@ -319,16 +294,6 @@ func (p *AWSProvider) generateTemplate(configs map[provider.Resource]map[string]
 		Type:        "String",
 	}
 
-	nets := provider.GenerateRoutes(configs)
-
-	for i, net := range nets {
-		template.Parameters[fmt.Sprintf("DestinationCidrBlock%d", i+1)] = &cft.Parameter{
-			Description: fmt.Sprintf("Destination CIDR Block %d", i+1),
-			Type:        "String",
-			Default:     net,
-		}
-	}
-
 	for i := 1; i <= len(p.availabilityZones); i++ {
 		template.Parameters[fmt.Sprintf("AZ%dRouteTableIDParameter", i)] = &cft.Parameter{
 			Description: fmt.Sprintf(
@@ -355,7 +320,7 @@ func (p *AWSProvider) generateTemplate(configs map[provider.Resource]map[string]
 			AvailabilityZone: cft.String(p.availabilityZones[i-1]),
 			VpcId:            cft.Ref("VPCIDParameter").String(),
 			Tags: []cft.ResourceTag{
-				cft.ResourceTag{
+				{
 					Key: cft.String("Name"),
 					Value: cft.String(
 						fmt.Sprintf("nat-%s", p.availabilityZones[i-1])),
@@ -377,7 +342,7 @@ func (p *AWSProvider) generateTemplate(configs map[provider.Resource]map[string]
 		template.AddResource(fmt.Sprintf("NATSubnetRouteTable%d", i), &cft.EC2RouteTable{
 			VpcId: cft.Ref("VPCIDParameter").String(),
 			Tags: []cft.ResourceTag{
-				cft.ResourceTag{
+				{
 					Key: cft.String("Name"),
 					Value: cft.String(
 						fmt.Sprintf("nat-%s", p.availabilityZones[i-1])),
@@ -386,7 +351,9 @@ func (p *AWSProvider) generateTemplate(configs map[provider.Resource]map[string]
 		})
 	}
 
-	for j, cidrEntry := range nets {
+	nets := provider.GenerateRoutes(configs)
+
+	for cidrEntry := range nets {
 		cleanCidrEntry := strings.Replace(cidrEntry, "/", "y", -1)
 		cleanCidrEntry = strings.Replace(cleanCidrEntry, ".", "x", -1)
 		for i := 1; i <= len(p.availabilityZones); i++ {
@@ -394,8 +361,7 @@ func (p *AWSProvider) generateTemplate(configs map[provider.Resource]map[string]
 			template.AddResource(fmt.Sprintf("RouteToNAT%dz%s", i, cleanCidrEntry), &cft.EC2Route{
 				RouteTableId: cft.Ref(
 					fmt.Sprintf("AZ%dRouteTableIDParameter", i)).String(),
-				DestinationCidrBlock: cft.Ref(
-					fmt.Sprintf("DestinationCidrBlock%d", j+1)).String(),
+				DestinationCidrBlock: cft.String(cidrEntry),
 				NatGatewayId: cft.Ref(
 					fmt.Sprintf("NATGateway%d", i)).String(),
 			})
@@ -587,6 +553,20 @@ func (p *AWSProvider) getEgressStack() (*cloudformation.Stack, error) {
 	}
 
 	return egressStack, nil
+}
+
+func (p *AWSProvider) getStackTemplateBody(stack *cloudformation.Stack) (string, error) {
+	tParams := &cloudformation.GetTemplateInput{
+		StackName:     stack.StackName,
+		TemplateStage: aws.String(cloudformation.TemplateStageOriginal),
+	}
+
+	resp, err := p.cloudformation.GetTemplate(tParams)
+	if err != nil {
+		return "", err
+	}
+
+	return aws.StringValue(resp.TemplateBody), nil
 }
 
 // cloudformationHasTags returns true if the expected tags are found in the

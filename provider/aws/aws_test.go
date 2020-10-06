@@ -2,6 +2,7 @@ package aws
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"sort"
 	"testing"
@@ -47,10 +48,6 @@ func TestGenerateStackSpec(t *testing.T) {
 		"foo": "bar",
 	}
 	expectedTags := []*cloudformation.Tag{
-		{
-			Key:   aws.String("egress-config/configmap/y/x"),
-			Value: aws.String("213.95.138.236/32"),
-		},
 		{
 			Key:   aws.String("foo"),
 			Value: aws.String("bar"),
@@ -142,7 +139,7 @@ func TestGenerateTemplate(t *testing.T) {
 		},
 	}
 	p := NewAWSProvider("cluster-x", "controller-x", true, "", natCidrBlocks, availabilityZones, false, nil)
-	expect := `{"AWSTemplateFormatVersion":"2010-09-09","Description":"Static Egress Stack","Parameters":{"AZ1RouteTableIDParameter":{"Type":"String","Description":"Route Table ID Availability Zone 1"},"DestinationCidrBlock1":{"Type":"String","Default":"213.95.138.236/32","Description":"Destination CIDR Block 1"},"InternetGatewayIDParameter":{"Type":"String","Description":"Internet Gateway ID"},"VPCIDParameter":{"Type":"AWS::EC2::VPC::Id","Description":"VPC ID"}},"Resources":{"EIP1":{"Type":"AWS::EC2::EIP","Properties":{"Domain":"vpc"}},"NATGateway1":{"Type":"AWS::EC2::NatGateway","Properties":{"AllocationId":{"Fn::GetAtt":["EIP1","AllocationId"]},"SubnetId":{"Ref":"NATSubnet1"}}},"NATSubnet1":{"Type":"AWS::EC2::Subnet","Properties":{"AvailabilityZone":"eu-central-1a","CidrBlock":"172.31.64.0/28","Tags":[{"Key":"Name","Value":"nat-eu-central-1a"}],"VpcId":{"Ref":"VPCIDParameter"}}},"NATSubnetRoute1":{"Type":"AWS::EC2::Route","Properties":{"DestinationCidrBlock":"0.0.0.0/0","GatewayId":{"Ref":"InternetGatewayIDParameter"},"RouteTableId":{"Ref":"NATSubnetRouteTable1"}}},"NATSubnetRouteTable1":{"Type":"AWS::EC2::RouteTable","Properties":{"VpcId":{"Ref":"VPCIDParameter"},"Tags":[{"Key":"Name","Value":"nat-eu-central-1a"}]}},"NATSubnetRouteTableAssociation1":{"Type":"AWS::EC2::SubnetRouteTableAssociation","Properties":{"RouteTableId":{"Ref":"NATSubnetRouteTable1"},"SubnetId":{"Ref":"NATSubnet1"}}},"RouteToNAT1z213x95x138x236y32":{"Type":"AWS::EC2::Route","Properties":{"DestinationCidrBlock":{"Ref":"DestinationCidrBlock1"},"NatGatewayId":{"Ref":"NATGateway1"},"RouteTableId":{"Ref":"AZ1RouteTableIDParameter"}}}},"Outputs":{"EIP1":{"Description":"external IP of the NATGateway1","Value":{"Ref":"EIP1"}}}}`
+	expect := `{"AWSTemplateFormatVersion":"2010-09-09","Description":"Static Egress Stack","Parameters":{"AZ1RouteTableIDParameter":{"Type":"String","Description":"Route Table ID Availability Zone 1"},"InternetGatewayIDParameter":{"Type":"String","Description":"Internet Gateway ID"},"VPCIDParameter":{"Type":"AWS::EC2::VPC::Id","Description":"VPC ID"}},"Resources":{"EIP1":{"Type":"AWS::EC2::EIP","Properties":{"Domain":"vpc"}},"NATGateway1":{"Type":"AWS::EC2::NatGateway","Properties":{"AllocationId":{"Fn::GetAtt":["EIP1","AllocationId"]},"SubnetId":{"Ref":"NATSubnet1"}}},"NATSubnet1":{"Type":"AWS::EC2::Subnet","Properties":{"AvailabilityZone":"eu-central-1a","CidrBlock":"172.31.64.0/28","Tags":[{"Key":"Name","Value":"nat-eu-central-1a"}],"VpcId":{"Ref":"VPCIDParameter"}}},"NATSubnetRoute1":{"Type":"AWS::EC2::Route","Properties":{"DestinationCidrBlock":"0.0.0.0/0","GatewayId":{"Ref":"InternetGatewayIDParameter"},"RouteTableId":{"Ref":"NATSubnetRouteTable1"}}},"NATSubnetRouteTable1":{"Type":"AWS::EC2::RouteTable","Properties":{"VpcId":{"Ref":"VPCIDParameter"},"Tags":[{"Key":"Name","Value":"nat-eu-central-1a"}]}},"NATSubnetRouteTableAssociation1":{"Type":"AWS::EC2::SubnetRouteTableAssociation","Properties":{"RouteTableId":{"Ref":"NATSubnetRouteTable1"},"SubnetId":{"Ref":"NATSubnet1"}}},"RouteToNAT1z213x95x138x236y32":{"Type":"AWS::EC2::Route","Properties":{"DestinationCidrBlock":"213.95.138.236/32","NatGatewayId":{"Ref":"NATGateway1"},"RouteTableId":{"Ref":"AZ1RouteTableIDParameter"}}}},"Outputs":{"EIP1":{"Description":"external IP of the NATGateway1","Value":{"Ref":"EIP1"}}}}`
 	template := p.generateTemplate(destinationCidrBlocks)
 	if template != expect {
 		t.Errorf("Expect:\n %s,\n but got %s", expect, template)
@@ -152,8 +149,9 @@ func TestGenerateTemplate(t *testing.T) {
 
 type mockCloudformation struct {
 	cloudformationiface.CloudFormationAPI
-	err   error
-	stack *cloudformation.Stack
+	err          error
+	stack        *cloudformation.Stack
+	templateBody string
 }
 
 func (cf *mockCloudformation) DescribeStacks(input *cloudformation.DescribeStacksInput) (*cloudformation.DescribeStacksOutput, error) {
@@ -164,6 +162,17 @@ func (cf *mockCloudformation) DescribeStacks(input *cloudformation.DescribeStack
 	}
 	return &cloudformation.DescribeStacksOutput{
 		Stacks: nil,
+	}, cf.err
+}
+
+func (cf *mockCloudformation) GetTemplate(input *cloudformation.GetTemplateInput) (*cloudformation.GetTemplateOutput, error) {
+	if cf.templateBody != "" {
+		return &cloudformation.GetTemplateOutput{
+			TemplateBody: aws.String(cf.templateBody),
+		}, nil
+	}
+	return &cloudformation.GetTemplateOutput{
+		TemplateBody: nil,
 	}, cf.err
 }
 
@@ -192,6 +201,7 @@ func (cf *mockCloudformation) UpdateStack(input *cloudformation.UpdateStackInput
 		StackStatus: aws.String(cloudformation.StackStatusUpdateComplete),
 		Tags:        input.Tags,
 	}
+	cf.templateBody = aws.StringValue(input.TemplateBody)
 	return &cloudformation.UpdateStackOutput{
 		StackId: aws.String(""),
 	}, cf.err
@@ -228,12 +238,13 @@ func TestEnsure(tt *testing.T) {
 	_, netB, _ := net.ParseCIDR("213.95.138.236/32")
 
 	for _, tc := range []struct {
-		msg           string
-		cf            *mockCloudformation
-		ec2           *mockEC2
-		configs       map[provider.Resource]map[string]*net.IPNet
-		success       bool
-		expectedStack *cloudformation.Stack
+		msg                       string
+		cf                        *mockCloudformation
+		ec2                       *mockEC2
+		configs                   map[provider.Resource]map[string]*net.IPNet
+		success                   bool
+		expectedStack             *cloudformation.Stack
+		expectedCIDRsFromTemplate map[string]struct{}
 	}{
 		{
 			msg: "DescribeStacks failing should result in error.",
@@ -279,14 +290,7 @@ func TestEnsure(tt *testing.T) {
 			success: true,
 			expectedStack: &cloudformation.Stack{
 				StackStatus: aws.String(cloudformation.StackStatusCreateComplete),
-				Tags: append(tagMapToCloudformationTags(configsToTags(map[provider.Resource]map[string]*net.IPNet{
-					{
-						Name:      "a",
-						Namespace: "x",
-					}: {
-						netA.String(): netA,
-					},
-				})), []*cloudformation.Tag{
+				Tags: []*cloudformation.Tag{
 					{
 						Key:   aws.String(clusterIDTagPrefix + "cluster-x"),
 						Value: aws.String(resourceLifecycleOwned),
@@ -295,7 +299,7 @@ func TestEnsure(tt *testing.T) {
 						Key:   aws.String(kubernetesApplicationTagKey),
 						Value: aws.String("controller-x"),
 					},
-				}...),
+				},
 			},
 		},
 		{
@@ -342,14 +346,7 @@ func TestEnsure(tt *testing.T) {
 			cf: &mockCloudformation{
 				stack: &cloudformation.Stack{
 					StackStatus: aws.String(cloudformation.StackStatusCreateComplete),
-					Tags: append(tagMapToCloudformationTags(configsToTags(map[provider.Resource]map[string]*net.IPNet{
-						{
-							Name:      "a",
-							Namespace: "x",
-						}: {
-							netA.String(): netA,
-						},
-					})), []*cloudformation.Tag{
+					Tags: []*cloudformation.Tag{
 						{
 							Key:   aws.String(clusterIDTagPrefix + "cluster-x"),
 							Value: aws.String(resourceLifecycleOwned),
@@ -358,8 +355,9 @@ func TestEnsure(tt *testing.T) {
 							Key:   aws.String(kubernetesApplicationTagKey),
 							Value: aws.String("controller-x"),
 						},
-					}...),
+					},
 				},
+				templateBody: fmt.Sprintf(`{"AWSTemplateFormatVersion":"2010-09-09","Description":"Static Egress Stack","Parameters":{"AZ1RouteTableIDParameter":{"Type":"String","Description":"Route Table ID Availability Zone 1"},"InternetGatewayIDParameter":{"Type":"String","Description":"Internet Gateway ID"},"VPCIDParameter":{"Type":"AWS::EC2::VPC::Id","Description":"VPC ID"}},"Resources":{"EIP1":{"Type":"AWS::EC2::EIP","Properties":{"Domain":"vpc"}},"NATGateway1":{"Type":"AWS::EC2::NatGateway","Properties":{"AllocationId":{"Fn::GetAtt":["EIP1","AllocationId"]},"SubnetId":{"Ref":"NATSubnet1"}}},"NATSubnet1":{"Type":"AWS::EC2::Subnet","Properties":{"AvailabilityZone":"eu-central-1a","CidrBlock":"172.31.64.0/28","Tags":[{"Key":"Name","Value":"nat-eu-central-1a"}],"VpcId":{"Ref":"VPCIDParameter"}}},"NATSubnetRoute1":{"Type":"AWS::EC2::Route","Properties":{"DestinationCidrBlock":"0.0.0.0/0","GatewayId":{"Ref":"InternetGatewayIDParameter"},"RouteTableId":{"Ref":"NATSubnetRouteTable1"}}},"NATSubnetRouteTable1":{"Type":"AWS::EC2::RouteTable","Properties":{"VpcId":{"Ref":"VPCIDParameter"},"Tags":[{"Key":"Name","Value":"nat-eu-central-1a"}]}},"NATSubnetRouteTableAssociation1":{"Type":"AWS::EC2::SubnetRouteTableAssociation","Properties":{"RouteTableId":{"Ref":"NATSubnetRouteTable1"},"SubnetId":{"Ref":"NATSubnet1"}}},"RouteToNAT1z213x95x138x235y32":{"Type":"AWS::EC2::Route","Properties":{"DestinationCidrBlock":"%s","NatGatewayId":{"Ref":"NATGateway1"},"RouteTableId":{"Ref":"AZ1RouteTableIDParameter"}}}},"Outputs":{"EIP1":{"Description":"external IP of the NATGateway1","Value":{"Ref":"EIP1"}}}}`, netA.String()),
 			},
 			ec2: &mockEC2{
 				describeInternetGatewaysOutput: &ec2.DescribeInternetGatewaysOutput{
@@ -389,15 +387,7 @@ func TestEnsure(tt *testing.T) {
 			success: true,
 			expectedStack: &cloudformation.Stack{
 				StackStatus: aws.String(cloudformation.StackStatusUpdateComplete),
-				Tags: append(tagMapToCloudformationTags(configsToTags(map[provider.Resource]map[string]*net.IPNet{
-					{
-						Name:      "a",
-						Namespace: "x",
-					}: {
-						netA.String(): netA,
-						netB.String(): netB,
-					},
-				})), []*cloudformation.Tag{
+				Tags: []*cloudformation.Tag{
 					{
 						Key:   aws.String(clusterIDTagPrefix + "cluster-x"),
 						Value: aws.String(resourceLifecycleOwned),
@@ -406,7 +396,11 @@ func TestEnsure(tt *testing.T) {
 						Key:   aws.String(kubernetesApplicationTagKey),
 						Value: aws.String("controller-x"),
 					},
-				}...),
+				},
+			},
+			expectedCIDRsFromTemplate: map[string]struct{}{
+				netA.String(): {},
+				netB.String(): {},
 			},
 		},
 	} {
@@ -441,6 +435,11 @@ func TestEnsure(tt *testing.T) {
 					})
 				}
 				require.Equal(t, tc.expectedStack, tc.cf.stack)
+				if len(tc.expectedCIDRsFromTemplate) > 0 {
+					cidrs, err := getCIDRsFromTemplate(tc.cf.templateBody)
+					require.NoError(t, err)
+					require.Equal(t, tc.expectedCIDRsFromTemplate, cidrs)
+				}
 			} else {
 				require.Error(t, err)
 			}

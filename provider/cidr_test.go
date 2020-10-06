@@ -15,38 +15,38 @@ func TestGenerateRoutes(tt *testing.T) {
 	for _, tc := range []struct {
 		msg      string
 		configs  map[Resource]map[string]*net.IPNet
-		expected []string
+		expected map[string]struct{}
 	}{
 		{
 			msg: "Subnet should be covered by superblock",
 			configs: map[Resource]map[string]*net.IPNet{
-				Resource{
+				{
 					Name:      "a",
 					Namespace: "x",
-				}: map[string]*net.IPNet{
+				}: {
 					netA.String(): netA,
 					netB.String(): netB,
 				},
 			},
-			expected: []string{
-				netA.String(),
+			expected: map[string]struct{}{
+				netA.String(): struct{}{},
 			},
 		},
 		{
 			msg: "non-overlapping subnets should be used.",
 			configs: map[Resource]map[string]*net.IPNet{
-				Resource{
+				{
 					Name:      "a",
 					Namespace: "x",
-				}: map[string]*net.IPNet{
+				}: {
 					netA.String(): netA,
 					netB.String(): netB,
 					netC.String(): netC,
 				},
 			},
-			expected: []string{
-				netC.String(),
-				netA.String(),
+			expected: map[string]struct{}{
+				netC.String(): struct{}{},
+				netA.String(): struct{}{},
 			},
 		},
 	} {
