@@ -128,10 +128,7 @@ func (p *AWSProvider) Ensure(configs map[provider.Resource]map[string]*net.IPNet
 		return err
 	}
 
-	storedCIDRs, err := getCIDRsFromTemplate(templateBody)
-	if err != nil {
-		return err
-	}
+	storedCIDRs := getCIDRsFromTemplate(templateBody)
 
 	newCIDRs := provider.GenerateRoutes(configs)
 
@@ -163,7 +160,7 @@ func stringSetEqual(a, b map[string]struct{}) bool {
 }
 
 // parses CIDRs from the Cloudformation template.
-func getCIDRsFromTemplate(template string) (map[string]struct{}, error) {
+func getCIDRsFromTemplate(template string) map[string]struct{} {
 	var cfTemplate struct {
 		Resources map[string]struct {
 			Type       string
@@ -174,7 +171,9 @@ func getCIDRsFromTemplate(template string) (map[string]struct{}, error) {
 	}
 	err := json.Unmarshal([]byte(template), &cfTemplate)
 	if err != nil {
-		return nil, err
+		// if we can't parse the template we assume no IP addresses
+		// found. This will triggere a recreation/update of the stack.
+		return nil
 	}
 
 	cidrs := make(map[string]struct{})
@@ -187,7 +186,7 @@ func getCIDRsFromTemplate(template string) (map[string]struct{}, error) {
 		}
 	}
 
-	return cidrs, nil
+	return cidrs
 }
 
 func (p *AWSProvider) generateStackSpec(configs map[provider.Resource]map[string]*net.IPNet) (*stackSpec, error) {
