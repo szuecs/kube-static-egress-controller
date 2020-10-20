@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
 	"github.com/szuecs/kube-static-egress-controller/controller"
 	"github.com/szuecs/kube-static-egress-controller/kube"
@@ -49,6 +51,7 @@ type Config struct {
 	AdditionalStackTags        map[string]string
 	Namespace                  string
 	ResyncInterval             time.Duration
+	Address                    string
 }
 
 var defaultConfig = &Config{
@@ -63,6 +66,7 @@ var defaultConfig = &Config{
 	Provider:                   "noop",
 	StackTerminationProtection: false,
 	Namespace:                  v1.NamespaceAll,
+	Address:                    ":8080",
 }
 
 func NewConfig() *Config {
@@ -121,6 +125,7 @@ Example:
 	app.Flag("dry-run", "When enabled, prints changes rather than actually performing them (default: disabled)").BoolVar(&cfg.DryRun)
 	app.Flag("log-level", "Set the level of logging. (default: info, options: panic, debug, info, warn, error, fatal").Default(defaultConfig.LogLevel).EnumVar(&cfg.LogLevel, allLogLevelsAsStrings()...)
 	app.Flag("namespace", "Limit controller to single namespace. (default: all namespaces").Default(defaultConfig.Namespace).StringVar(&cfg.Namespace)
+	app.Flag("address", "The address to listen on. (default: ':8080'").Default(defaultConfig.Address).StringVar(&cfg.Address)
 	_, err := app.Parse(args)
 	if err != nil {
 		return err
@@ -162,6 +167,10 @@ func main() {
 
 	go cmWatcher.Run(ctx)
 
+	handler := http.NewServeMux()
+	handler.Handle("/metrics", promhttp.Handler())
+	go serve(ctx, cfg.Address, handler)
+
 	controller := controller.NewEgressController(p, cmWatcher, cfg.ResyncInterval)
 	controller.Run(ctx)
 }
@@ -194,4 +203,26 @@ func handleSigterm(cancelFunc func()) {
 	<-signals
 	log.Info("Received Term signal. Terminating...")
 	cancelFunc()
+}
+
+func serve(ctx context.Context, address string, handler http.Handler) {
+	server := http.Server{
+		Addr:    address,
+		Handler: handler,
+	}
+
+	log.Infof("Starting server on %s", address)
+
+	go func() {
+		<-ctx.Done()
+		log.Infof("Shutting down server ...")
+		server.Shutdown(ctx)
+	}()
+
+	err := server.ListenAndServe()
+	if err != nil {
+		if err != http.ErrServerClosed {
+			log.Fatal(err)
+		}
+	}
 }
