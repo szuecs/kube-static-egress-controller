@@ -92,6 +92,8 @@ func (c *EgressController) Run(ctx context.Context) {
 				log.Errorf("Failed to ensure configuration: %v", err)
 				continue
 			}
+			// successfully synced
+			lastSyncTimestamp.SetToCurrentTime()
 		case <-ctx.Done():
 			log.Info("Terminating controller loop.")
 			return
