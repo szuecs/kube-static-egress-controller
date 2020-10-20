@@ -5,9 +5,23 @@ import (
 	"net"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
 	"github.com/szuecs/kube-static-egress-controller/provider"
 )
+
+var lastSyncTimestamp = prometheus.NewGauge(
+	prometheus.GaugeOpts{
+		Namespace: "kube_static_egress",
+		Subsystem: "controller",
+		Name:      "last_sync_timestamp_seconds",
+		Help:      "Timestamp of last successful sync with the DNS provider",
+	},
+)
+
+func init() {
+	prometheus.MustRegister(lastSyncTimestamp)
+}
 
 type EgressConfigSource interface {
 	ListConfigs() ([]provider.EgressConfig, error)
@@ -76,6 +90,9 @@ func (c *EgressController) Run(ctx context.Context) {
 				log.Errorf("Failed to ensure configuration: %v", err)
 				continue
 			}
+
+			// successfully synced
+			lastSyncTimestamp.SetToCurrentTime()
 		case <-ctx.Done():
 			log.Info("Terminating controller loop.")
 			return
