@@ -62,6 +62,17 @@ type AWSProvider struct {
 	logger                     *log.Entry
 }
 
+type stackSpec struct {
+	name                       string
+	vpcID                      string
+	internetGatewayID          string
+	tableID                    map[string]string
+	timeoutInMinutes           uint
+	template                   string
+	stackTerminationProtection bool
+	tags                       []*cloudformation.Tag
+}
+
 func NewAWSProvider(clusterID, controllerID string, dry bool, vpcID string, natCidrBlocks, availabilityZones []string, stackTerminationProtection bool, additionalStackTags map[string]string) *AWSProvider {
 	// TODO: find vpcID at startup
 	p := defaultConfigProvider()
@@ -192,8 +203,6 @@ func getCIDRsFromTemplate(template string) map[string]struct{} {
 func (p *AWSProvider) generateStackSpec(configs map[provider.Resource]map[string]*net.IPNet) (*stackSpec, error) {
 	spec := &stackSpec{
 		name:                       normalizeStackName(p.clusterID),
-		template:                   p.generateTemplate(configs),
-		tableID:                    make(map[string]string),
 		timeoutInMinutes:           10,
 		stackTerminationProtection: p.stackTerminationProtection,
 	}
@@ -232,16 +241,50 @@ func (p *AWSProvider) generateStackSpec(configs map[provider.Resource]map[string
 		return nil, err
 	}
 
-	// adding route tables to spec
-	for _, table := range rt {
-		for _, tag := range table.Tags {
-			if tagDefaultAZKeyRouteTableID == aws.StringValue(tag.Key) {
-				// eu-central-1a -> rtb-b738aadc
-				spec.tableID[aws.StringValue(tag.Value)] = aws.StringValue(table.RouteTableId)
-			}
+	tableZoneIndexes := make(map[string]int)
+	tableID := make(map[string]string)
+	for i, table := range rt {
+		zone, ok := routeTableZone(table)
+		if !ok {
+			continue
+		}
+
+		zindex, ok := zoneIndex(p.availabilityZones, zone)
+		if !ok {
+			return nil, fmt.Errorf(
+				"unrecognized availability zone in routing table tags: %s",
+				zone,
+			)
+		}
+
+		paramName := fmt.Sprintf("AZ%dRouteTableIDParameter", i+1)
+		tableZoneIndexes[paramName] = zindex
+		tableID[paramName] = aws.StringValue(table.RouteTableId)
+	}
+
+	spec.template = p.generateTemplate(configs, tableZoneIndexes)
+	spec.tableID = tableID
+	return spec, nil
+}
+
+func routeTableZone(rt *ec2.RouteTable) (string, bool) {
+	for _, tag := range rt.Tags {
+		if tagDefaultAZKeyRouteTableID == aws.StringValue(tag.Key) {
+			return aws.StringValue(tag.Value), true
 		}
 	}
-	return spec, nil
+
+	return "", false
+}
+
+func zoneIndex(zones []string, zone string) (int, bool) {
+	for i, z := range zones {
+		if z == zone {
+			return i, true
+		}
+	}
+
+	return 0, false
 }
 
 func (p *AWSProvider) findVPC() (string, error) {
@@ -269,18 +312,7 @@ func (p *AWSProvider) findVPC() (string, error) {
 	return "", fmt.Errorf("VPC not found")
 }
 
-type stackSpec struct {
-	name                       string
-	vpcID                      string
-	internetGatewayID          string
-	tableID                    map[string]string
-	timeoutInMinutes           uint
-	template                   string
-	stackTerminationProtection bool
-	tags                       []*cloudformation.Tag
-}
-
-func (p *AWSProvider) generateTemplate(configs map[provider.Resource]map[string]*net.IPNet) string {
+func (p *AWSProvider) generateTemplate(configs map[provider.Resource]map[string]*net.IPNet, rts map[string]int) string {
 	template := cft.NewTemplate()
 	template.Description = "Static Egress Stack"
 	template.Outputs = map[string]*cft.Output{}
@@ -294,11 +326,6 @@ func (p *AWSProvider) generateTemplate(configs map[provider.Resource]map[string]
 	}
 
 	for i := 1; i <= len(p.availabilityZones); i++ {
-		template.Parameters[fmt.Sprintf("AZ%dRouteTableIDParameter", i)] = &cft.Parameter{
-			Description: fmt.Sprintf(
-				"Route Table ID Availability Zone %d", i),
-			Type: "String",
-		}
 		template.AddResource(fmt.Sprintf("NATGateway%d", i), &cft.EC2NatGateway{
 			SubnetId: cft.Ref(
 				fmt.Sprintf("NATSubnet%d", i)).String(),
@@ -351,21 +378,26 @@ func (p *AWSProvider) generateTemplate(configs map[provider.Resource]map[string]
 	}
 
 	nets := provider.GenerateRoutes(configs)
-
 	for cidrEntry := range nets {
 		cleanCidrEntry := strings.Replace(cidrEntry, "/", "y", -1)
 		cleanCidrEntry = strings.Replace(cleanCidrEntry, ".", "x", -1)
-		for i := 1; i <= len(p.availabilityZones); i++ {
-			p.logger.Debugf("RouteToNAT%dz%s", i, cleanCidrEntry)
-			template.AddResource(fmt.Sprintf("RouteToNAT%dz%s", i, cleanCidrEntry), &cft.EC2Route{
-				RouteTableId: cft.Ref(
-					fmt.Sprintf("AZ%dRouteTableIDParameter", i)).String(),
+		counter := 1
+		for routeTableParam, zoneIndex := range rts {
+			template.Parameters[routeTableParam] = &cft.Parameter{
+				Description: fmt.Sprintf("Route Table ID No %d", counter),
+				Type:        "String",
+			}
+
+			template.AddResource(fmt.Sprintf("RouteToNAT%dz%s", counter, cleanCidrEntry), &cft.EC2Route{
+				RouteTableId:         cft.Ref(routeTableParam).String(),
 				DestinationCidrBlock: cft.String(cidrEntry),
-				NatGatewayId: cft.Ref(
-					fmt.Sprintf("NATGateway%d", i)).String(),
+				NatGatewayId:         cft.Ref(fmt.Sprintf("NATGateway%d", zoneIndex+1)).String(),
 			})
+
+			counter++
 		}
 	}
+
 	stack, _ := json.Marshal(template)
 	return string(stack)
 }
@@ -424,19 +456,17 @@ func (p *AWSProvider) deleteCFStack(stackName string) error {
 func (p *AWSProvider) updateCFStack(spec *stackSpec) error {
 	params := &cloudformation.UpdateStackInput{
 		StackName: aws.String(spec.name),
-		Parameters: []*cloudformation.Parameter{
-			cfParam(parameterVPCIDParameter, spec.vpcID),
-			cfParam(parameterInternetGatewayIDParameter, spec.internetGatewayID),
-		},
+		Parameters: append(
+			[]*cloudformation.Parameter{
+				cfParam(parameterVPCIDParameter, spec.vpcID),
+				cfParam(parameterInternetGatewayIDParameter, spec.internetGatewayID),
+			},
+			routeTableParams(spec)...,
+		),
 		TemplateBody: aws.String(spec.template),
 		Tags:         spec.tags,
 	}
-	for i, az := range p.availabilityZones {
-		params.Parameters = append(params.Parameters,
-			cfParam(
-				fmt.Sprintf("AZ%dRouteTableIDParameter", i+1),
-				spec.tableID[az]))
-	}
+
 	if !p.dry {
 		// ensure the stack termination protection is set
 		if spec.stackTerminationProtection {
@@ -475,21 +505,19 @@ func (p *AWSProvider) createCFStack(spec *stackSpec) error {
 	params := &cloudformation.CreateStackInput{
 		StackName: aws.String(spec.name),
 		OnFailure: aws.String(cloudformation.OnFailureDelete),
-		Parameters: []*cloudformation.Parameter{
-			cfParam(parameterVPCIDParameter, spec.vpcID),
-			cfParam(parameterInternetGatewayIDParameter, spec.internetGatewayID),
-		},
+		Parameters: append(
+			[]*cloudformation.Parameter{
+				cfParam(parameterVPCIDParameter, spec.vpcID),
+				cfParam(parameterInternetGatewayIDParameter, spec.internetGatewayID),
+			},
+			routeTableParams(spec)...,
+		),
 		TemplateBody:                aws.String(spec.template),
 		TimeoutInMinutes:            aws.Int64(int64(spec.timeoutInMinutes)),
 		EnableTerminationProtection: aws.Bool(spec.stackTerminationProtection),
 		Tags:                        spec.tags,
 	}
-	for i, az := range p.availabilityZones {
-		params.Parameters = append(params.Parameters,
-			cfParam(
-				fmt.Sprintf("AZ%dRouteTableIDParameter", i+1),
-				spec.tableID[az]))
-	}
+
 	if !p.dry {
 		_, err := p.cloudformation.CreateStack(params)
 		if err != nil {
@@ -510,6 +538,15 @@ func (p *AWSProvider) createCFStack(spec *stackSpec) error {
 	p.logger.Debugln(aws.StringValue(params.TemplateBody))
 	return nil
 
+}
+
+func routeTableParams(s *stackSpec) []*cloudformation.Parameter {
+	var params []*cloudformation.Parameter
+	for paramName, routeTableID := range s.tableID {
+		params = append(params, cfParam(paramName, routeTableID))
+	}
+
+	return params
 }
 
 func (p *AWSProvider) getStackByName(stackName string) (*cloudformation.Stack, error) {

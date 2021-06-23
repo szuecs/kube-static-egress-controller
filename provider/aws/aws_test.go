@@ -116,8 +116,12 @@ func TestGenerateStackSpec(t *testing.T) {
 	if stackSpec.internetGatewayID != expectedInternetGatewayId {
 		t.Errorf("Expect: %s,\n but got %s", expectedInternetGatewayId, stackSpec.internetGatewayID)
 	}
-	if stackSpec.tableID["eu-central-1a"] != expectedRouteTableId {
-		t.Errorf("Expect: %s,\n but got %s", expectedRouteTableId, stackSpec.tableID["eu-central-1a"])
+	if stackSpec.tableID["AZ1RouteTableIDParameter"] != expectedRouteTableId {
+		t.Errorf(
+			"Expect: %s,\n but got %s",
+			expectedRouteTableId,
+			stackSpec.tableID["AZ1RouteTableIDParameter"],
+		)
 	}
 	// sort tags to ensure stable comparison
 	sort.Slice(stackSpec.tags, func(i, j int) bool {
@@ -139,10 +143,13 @@ func TestGenerateTemplate(t *testing.T) {
 		},
 	}
 	p := NewAWSProvider("cluster-x", "controller-x", true, "", natCidrBlocks, availabilityZones, false, nil)
-	expect := `{"AWSTemplateFormatVersion":"2010-09-09","Description":"Static Egress Stack","Parameters":{"AZ1RouteTableIDParameter":{"Type":"String","Description":"Route Table ID Availability Zone 1"},"InternetGatewayIDParameter":{"Type":"String","Description":"Internet Gateway ID"},"VPCIDParameter":{"Type":"AWS::EC2::VPC::Id","Description":"VPC ID"}},"Resources":{"EIP1":{"Type":"AWS::EC2::EIP","Properties":{"Domain":"vpc"}},"NATGateway1":{"Type":"AWS::EC2::NatGateway","Properties":{"AllocationId":{"Fn::GetAtt":["EIP1","AllocationId"]},"SubnetId":{"Ref":"NATSubnet1"}}},"NATSubnet1":{"Type":"AWS::EC2::Subnet","Properties":{"AvailabilityZone":"eu-central-1a","CidrBlock":"172.31.64.0/28","Tags":[{"Key":"Name","Value":"nat-eu-central-1a"}],"VpcId":{"Ref":"VPCIDParameter"}}},"NATSubnetRoute1":{"Type":"AWS::EC2::Route","Properties":{"DestinationCidrBlock":"0.0.0.0/0","GatewayId":{"Ref":"InternetGatewayIDParameter"},"RouteTableId":{"Ref":"NATSubnetRouteTable1"}}},"NATSubnetRouteTable1":{"Type":"AWS::EC2::RouteTable","Properties":{"VpcId":{"Ref":"VPCIDParameter"},"Tags":[{"Key":"Name","Value":"nat-eu-central-1a"}]}},"NATSubnetRouteTableAssociation1":{"Type":"AWS::EC2::SubnetRouteTableAssociation","Properties":{"RouteTableId":{"Ref":"NATSubnetRouteTable1"},"SubnetId":{"Ref":"NATSubnet1"}}},"RouteToNAT1z213x95x138x236y32":{"Type":"AWS::EC2::Route","Properties":{"DestinationCidrBlock":"213.95.138.236/32","NatGatewayId":{"Ref":"NATGateway1"},"RouteTableId":{"Ref":"AZ1RouteTableIDParameter"}}}},"Outputs":{"EIP1":{"Description":"external IP of the NATGateway1","Value":{"Ref":"EIP1"}}}}`
-	template := p.generateTemplate(destinationCidrBlocks)
+	expect := `{"AWSTemplateFormatVersion":"2010-09-09","Description":"Static Egress Stack","Parameters":{"AZ1RouteTableIDParameter":{"Type":"String","Description":"Route Table ID No 1"},"InternetGatewayIDParameter":{"Type":"String","Description":"Internet Gateway ID"},"VPCIDParameter":{"Type":"AWS::EC2::VPC::Id","Description":"VPC ID"}},"Resources":{"EIP1":{"Type":"AWS::EC2::EIP","Properties":{"Domain":"vpc"}},"NATGateway1":{"Type":"AWS::EC2::NatGateway","Properties":{"AllocationId":{"Fn::GetAtt":["EIP1","AllocationId"]},"SubnetId":{"Ref":"NATSubnet1"}}},"NATSubnet1":{"Type":"AWS::EC2::Subnet","Properties":{"AvailabilityZone":"eu-central-1a","CidrBlock":"172.31.64.0/28","Tags":[{"Key":"Name","Value":"nat-eu-central-1a"}],"VpcId":{"Ref":"VPCIDParameter"}}},"NATSubnetRoute1":{"Type":"AWS::EC2::Route","Properties":{"DestinationCidrBlock":"0.0.0.0/0","GatewayId":{"Ref":"InternetGatewayIDParameter"},"RouteTableId":{"Ref":"NATSubnetRouteTable1"}}},"NATSubnetRouteTable1":{"Type":"AWS::EC2::RouteTable","Properties":{"VpcId":{"Ref":"VPCIDParameter"},"Tags":[{"Key":"Name","Value":"nat-eu-central-1a"}]}},"NATSubnetRouteTableAssociation1":{"Type":"AWS::EC2::SubnetRouteTableAssociation","Properties":{"RouteTableId":{"Ref":"NATSubnetRouteTable1"},"SubnetId":{"Ref":"NATSubnet1"}}},"RouteToNAT1z213x95x138x236y32":{"Type":"AWS::EC2::Route","Properties":{"DestinationCidrBlock":"213.95.138.236/32","NatGatewayId":{"Ref":"NATGateway1"},"RouteTableId":{"Ref":"AZ1RouteTableIDParameter"}}}},"Outputs":{"EIP1":{"Description":"external IP of the NATGateway1","Value":{"Ref":"EIP1"}}}}`
+	template := p.generateTemplate(
+		destinationCidrBlocks,
+		map[string]int{"AZ1RouteTableIDParameter": 0},
+	)
 	if template != expect {
-		t.Errorf("Expect:\n %s,\n but got %s", expect, template)
+		t.Errorf("Expect:\n %s,\n but got:\n %s", expect, template)
 	}
 
 }
@@ -370,7 +377,13 @@ func TestEnsure(tt *testing.T) {
 				describeRouteTables: &ec2.DescribeRouteTablesOutput{
 					RouteTables: []*ec2.RouteTable{
 						{
-							RouteTableId: aws.String(""),
+							RouteTableId: aws.String("foo"),
+							Tags: []*ec2.Tag{
+								{
+									Key:   aws.String("AvailabilityZone"),
+									Value: aws.String("eu-central-1a"),
+								},
+							},
 						},
 					},
 				},
@@ -432,7 +445,11 @@ func TestEnsure(tt *testing.T) {
 				describeRouteTables: &ec2.DescribeRouteTablesOutput{
 					RouteTables: []*ec2.RouteTable{
 						{
-							RouteTableId: aws.String(""),
+							RouteTableId: aws.String("foo"),
+							Tags: []*ec2.Tag{{
+								Key:   aws.String("AvailabilityZone"),
+								Value: aws.String("eu-central-1a"),
+							}},
 						},
 					},
 				},
