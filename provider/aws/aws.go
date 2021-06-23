@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 	"time"
 
@@ -200,6 +201,16 @@ func getCIDRsFromTemplate(template string) map[string]struct{} {
 	return cidrs
 }
 
+func findTagByKey(tags []*ec2.Tag, key string) string {
+	for _, t := range tags {
+		if aws.StringValue(t.Key) == key {
+			return aws.StringValue(t.Value)
+		}
+	}
+
+	return ""
+}
+
 func (p *AWSProvider) generateStackSpec(configs map[provider.Resource]map[string]*net.IPNet) (*stackSpec, error) {
 	spec := &stackSpec{
 		name:                       normalizeStackName(p.clusterID),
@@ -241,6 +252,50 @@ func (p *AWSProvider) generateStackSpec(configs map[provider.Resource]map[string
 		return nil, err
 	}
 
+	// [supporting multiple routing tables]
+	// as a migration step, in order to preserve the current indexes CloudFormation template names of the
+	// route-to-nat resources, we need to order them first, they are only identifiable by their standard
+	// name: dmz-eu-central-1a.
+	sort.SliceStable(rt, func(i, j int) bool {
+		rti, rtj := rt[i], rt[j]
+
+		zonei, ok := routeTableZone(rti)
+		if !ok {
+			return false
+		}
+
+		zonej, ok := routeTableZone(rtj)
+		if !ok {
+			return true
+		}
+
+		namei := findTagByKey(rti.Tags, "Name")
+		namej := findTagByKey(rtj.Tags, "Name")
+		standardi := namei == fmt.Sprintf("%s-%s", tagDefaultTypeValueRouteTableID, zonei)
+		standardj := namej == fmt.Sprintf("%s-%s", tagDefaultTypeValueRouteTableID, zonej)
+
+		if !standardi {
+			return false
+		}
+
+		if standardi && !standardj {
+			return true
+		}
+
+		zoneIndexi, ok := zoneIndex(p.availabilityZones, zonei)
+		if !ok {
+			return false
+		}
+
+		zoneIndexj, ok := zoneIndex(p.availabilityZones, zonej)
+		if !ok {
+			return true
+		}
+
+		return zoneIndexi < zoneIndexj
+	})
+
+	var paramOrder []string
 	tableZoneIndexes := make(map[string]int)
 	tableID := make(map[string]string)
 	for i, table := range rt {
@@ -258,11 +313,12 @@ func (p *AWSProvider) generateStackSpec(configs map[provider.Resource]map[string
 		}
 
 		paramName := fmt.Sprintf("AZ%dRouteTableIDParameter", i+1)
+		paramOrder = append(paramOrder, paramName)
 		tableZoneIndexes[paramName] = zindex
 		tableID[paramName] = aws.StringValue(table.RouteTableId)
 	}
 
-	spec.template = p.generateTemplate(configs, tableZoneIndexes)
+	spec.template = p.generateTemplate(configs, paramOrder, tableZoneIndexes)
 	spec.tableID = tableID
 	return spec, nil
 }
@@ -312,7 +368,11 @@ func (p *AWSProvider) findVPC() (string, error) {
 	return "", fmt.Errorf("VPC not found")
 }
 
-func (p *AWSProvider) generateTemplate(configs map[provider.Resource]map[string]*net.IPNet, rts map[string]int) string {
+func (p *AWSProvider) generateTemplate(
+	configs map[provider.Resource]map[string]*net.IPNet,
+	routeTableParamOrder []string,
+	routeTableZoneIndexes map[string]int,
+) string {
 	template := cft.NewTemplate()
 	template.Description = "Static Egress Stack"
 	template.Outputs = map[string]*cft.Output{}
@@ -381,20 +441,20 @@ func (p *AWSProvider) generateTemplate(configs map[provider.Resource]map[string]
 	for cidrEntry := range nets {
 		cleanCidrEntry := strings.Replace(cidrEntry, "/", "y", -1)
 		cleanCidrEntry = strings.Replace(cleanCidrEntry, ".", "x", -1)
-		counter := 1
-		for routeTableParam, zoneIndex := range rts {
+		for i, routeTableParam := range routeTableParamOrder {
 			template.Parameters[routeTableParam] = &cft.Parameter{
-				Description: fmt.Sprintf("Route Table ID No %d", counter),
+				Description: fmt.Sprintf("Route Table ID No %d", i+1),
 				Type:        "String",
 			}
 
-			template.AddResource(fmt.Sprintf("RouteToNAT%dz%s", counter, cleanCidrEntry), &cft.EC2Route{
+			template.AddResource(fmt.Sprintf("RouteToNAT%dz%s", i+1, cleanCidrEntry), &cft.EC2Route{
 				RouteTableId:         cft.Ref(routeTableParam).String(),
 				DestinationCidrBlock: cft.String(cidrEntry),
-				NatGatewayId:         cft.Ref(fmt.Sprintf("NATGateway%d", zoneIndex+1)).String(),
+				NatGatewayId: cft.Ref(fmt.Sprintf(
+					"NATGateway%d",
+					routeTableZoneIndexes[routeTableParam]+1,
+				)).String(),
 			})
-
-			counter++
 		}
 	}
 
