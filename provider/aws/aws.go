@@ -32,7 +32,6 @@ const (
 	tagDefaultAZKeyRouteTableID         = "AvailabilityZone"
 	tagDefaultTypeValueRouteTableID     = "dmz" // find route table by "Type" tag = "dmz"
 	egressConfigTagPrefix               = "egress-config/"
-	clusterIDTagPrefix                  = "kubernetes.io/cluster/"
 	kubernetesApplicationTagKey         = "kubernetes:application"
 	resourceLifecycleOwned              = "owned"
 	maxStackWaitTimeout                 = 15 * time.Minute
@@ -51,6 +50,7 @@ var (
 
 type AWSProvider struct {
 	clusterID                  string
+	clusterIDTagPrefix         string
 	controllerID               string
 	dry                        bool
 	vpcID                      string
@@ -74,11 +74,12 @@ type stackSpec struct {
 	tags                       []*cloudformation.Tag
 }
 
-func NewAWSProvider(clusterID, controllerID string, dry bool, vpcID string, natCidrBlocks, availabilityZones []string, stackTerminationProtection bool, additionalStackTags map[string]string) *AWSProvider {
+func NewAWSProvider(clusterID, controllerID string, dry bool, vpcID string, clusterIDTagPrefix string, natCidrBlocks, availabilityZones []string, stackTerminationProtection bool, additionalStackTags map[string]string) *AWSProvider {
 	// TODO: find vpcID at startup
 	p := defaultConfigProvider()
 	return &AWSProvider{
 		clusterID:                  clusterID,
+		clusterIDTagPrefix:         clusterIDTagPrefix,
 		controllerID:               controllerID,
 		dry:                        dry,
 		vpcID:                      vpcID,
@@ -219,8 +220,8 @@ func (p *AWSProvider) generateStackSpec(configs map[provider.Resource]map[string
 	}
 
 	tags := map[string]string{
-		clusterIDTagPrefix + p.clusterID: resourceLifecycleOwned,
-		kubernetesApplicationTagKey:      p.controllerID,
+		p.clusterIDTagPrefix + p.clusterID: resourceLifecycleOwned,
+		kubernetesApplicationTagKey:        p.controllerID,
 	}
 	spec.tags = tagMapToCloudformationTags(mergeTags(p.additionalStackTags, tags))
 
@@ -628,8 +629,8 @@ func (p *AWSProvider) getStackByName(stackName string) (*cloudformation.Stack, e
 // name.
 func (p *AWSProvider) getEgressStack() (*cloudformation.Stack, error) {
 	tags := map[string]string{
-		clusterIDTagPrefix + p.clusterID: resourceLifecycleOwned,
-		kubernetesApplicationTagKey:      p.controllerID,
+		p.clusterIDTagPrefix + p.clusterID: resourceLifecycleOwned,
+		kubernetesApplicationTagKey:        p.controllerID,
 	}
 
 	params := &cloudformation.DescribeStacksInput{}
