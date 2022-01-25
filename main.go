@@ -49,7 +49,7 @@ type Config struct {
 	// required by AWS provider
 	AvailabilityZones          []string
 	StackTerminationProtection bool
-	AdditionalStackTags        map[string]string
+	AdditionalStackTags        StringMap
 	Namespace                  string
 	ResyncInterval             time.Duration
 	Address                    string
@@ -123,7 +123,7 @@ Example:
 	app.Flag("aws-nat-cidr-block", "AWS Provider requires to specify NAT-CIDR-Blocks for each AZ to have a NAT gateway in. Each should be a small network having only the NAT GW").StringsVar(&cfg.NatCidrBlocks)
 	app.Flag("aws-az", "AWS Provider requires to specify all AZs to have a NAT gateway in.").StringsVar(&cfg.AvailabilityZones)
 	app.Flag("stack-termination-protection", "Enables AWS clouformation stack termination protection for the stacks managed by the controller.").BoolVar(&cfg.StackTerminationProtection)
-	app.Flag("additional-stack-tags", "Set additional custom tags on the Cloudformation Stacks managed by the controller.").StringMapVar(&cfg.AdditionalStackTags)
+	app.Flag("additional-stack-tags", "Set additional custom tags on the Cloudformation Stacks managed by the controller.").SetValue(&cfg.AdditionalStackTags)
 	app.Flag("resync-interval", "Resync interval to make sure current state is actual state.").Default("5m").DurationVar(&cfg.ResyncInterval)
 	app.Flag("dry-run", "When enabled, prints changes rather than actually performing them (default: disabled)").BoolVar(&cfg.DryRun)
 	app.Flag("log-level", "Set the level of logging. (default: info, options: panic, debug, info, warn, error, fatal").Default(defaultConfig.LogLevel).EnumVar(&cfg.LogLevel, allLogLevelsAsStrings()...)
