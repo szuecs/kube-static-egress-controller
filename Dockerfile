@@ -4,6 +4,6 @@ MAINTAINER Team Teapot @ Zalando SE <team-teapot@zalando.de>
 
 # add binary
 ARG TARGETARCH
-ADD build/linux/kube-static-egress-controller /
+ADD build/linux/${TARGETARCH}/kube-static-egress-controller /
 
 ENTRYPOINT ["/kube-static-egress-controller"]
