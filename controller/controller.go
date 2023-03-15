@@ -24,7 +24,7 @@ func init() {
 }
 
 type EgressConfigSource interface {
-	ListConfigs() ([]provider.EgressConfig, error)
+	ListConfigs(ctx context.Context) ([]provider.EgressConfig, error)
 	Config() <-chan provider.EgressConfig
 }
 
@@ -54,7 +54,7 @@ func (c *EgressController) Run(ctx context.Context) {
 
 	for {
 		if !c.cacheInitialized {
-			configs, err := c.configSource.ListConfigs()
+			configs, err := c.configSource.ListConfigs(ctx)
 			if err != nil {
 				log.Errorf("Failed to list Egress configurations: %v", err)
 				time.Sleep(3 * time.Second)

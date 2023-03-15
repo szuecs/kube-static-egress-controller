@@ -41,11 +41,11 @@ func (c *ConfigMapWatcher) Run(ctx context.Context) {
 		&cache.ListWatch{
 			ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
 				options.LabelSelector = c.selector.String()
-				return c.client.CoreV1().ConfigMaps(c.namespace).List(options)
+				return c.client.CoreV1().ConfigMaps(c.namespace).List(ctx, options)
 			},
 			WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
 				options.LabelSelector = c.selector.String()
-				return c.client.CoreV1().ConfigMaps(c.namespace).Watch(options)
+				return c.client.CoreV1().ConfigMaps(c.namespace).Watch(ctx, options)
 			},
 		},
 		&v1.ConfigMap{},
@@ -104,12 +104,12 @@ func (c *ConfigMapWatcher) del(obj interface{}) {
 	}
 }
 
-func (c *ConfigMapWatcher) ListConfigs() ([]provider.EgressConfig, error) {
+func (c *ConfigMapWatcher) ListConfigs(ctx context.Context) ([]provider.EgressConfig, error) {
 	opts := metav1.ListOptions{
 		LabelSelector: c.selector.String(),
 	}
 
-	configMaps, err := c.client.CoreV1().ConfigMaps(c.namespace).List(opts)
+	configMaps, err := c.client.CoreV1().ConfigMaps(c.namespace).List(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
