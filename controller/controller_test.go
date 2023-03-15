@@ -15,7 +15,7 @@ type mockEgressConfigSource struct {
 	configsChan <-chan provider.EgressConfig
 }
 
-func (s mockEgressConfigSource) ListConfigs() ([]provider.EgressConfig, error) {
+func (s mockEgressConfigSource) ListConfigs(_ context.Context) ([]provider.EgressConfig, error) {
 	return s.configs, nil
 }
 
