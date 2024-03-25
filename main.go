@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	kingpin "github.com/alecthomas/kingpin/v2"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
 	"github.com/szuecs/kube-static-egress-controller/controller"
@@ -16,7 +17,6 @@ import (
 	"github.com/szuecs/kube-static-egress-controller/provider"
 	"github.com/szuecs/kube-static-egress-controller/provider/aws"
 	"github.com/szuecs/kube-static-egress-controller/provider/noop"
-	kingpin "gopkg.in/alecthomas/kingpin.v2"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
