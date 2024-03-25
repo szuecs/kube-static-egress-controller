@@ -388,9 +388,9 @@ func (p *AWSProvider) generateTemplate(
 
 	for i := 1; i <= len(p.availabilityZones); i++ {
 		template.AddResource(fmt.Sprintf("NATGateway%d", i), &cft.EC2NatGateway{
-			SubnetId: cft.Ref(
+			SubnetID: cft.Ref(
 				fmt.Sprintf("NATSubnet%d", i)).String(),
-			AllocationId: cft.GetAtt(
+			AllocationID: cft.GetAtt(
 				fmt.Sprintf("EIP%d", i), "AllocationId"),
 		})
 
@@ -405,8 +405,8 @@ func (p *AWSProvider) generateTemplate(
 		template.AddResource(fmt.Sprintf("NATSubnet%d", i), &cft.EC2Subnet{
 			CidrBlock:        cft.String(p.natCidrBlocks[i-1]),
 			AvailabilityZone: cft.String(p.availabilityZones[i-1]),
-			VpcId:            cft.Ref("VPCIDParameter").String(),
-			Tags: []cft.ResourceTag{
+			VPCID:            cft.Ref("VPCIDParameter").String(),
+			Tags: &cft.TagList{
 				{
 					Key: cft.String("Name"),
 					Value: cft.String(
@@ -415,20 +415,20 @@ func (p *AWSProvider) generateTemplate(
 			},
 		})
 		template.AddResource(fmt.Sprintf("NATSubnetRoute%d", i), &cft.EC2Route{
-			RouteTableId: cft.Ref(
+			RouteTableID: cft.Ref(
 				fmt.Sprintf("NATSubnetRouteTable%d", i)).String(),
 			DestinationCidrBlock: cft.String("0.0.0.0/0"),
-			GatewayId:            cft.Ref("InternetGatewayIDParameter").String(),
+			GatewayID:            cft.Ref("InternetGatewayIDParameter").String(),
 		})
 		template.AddResource(fmt.Sprintf("NATSubnetRouteTableAssociation%d", i), &cft.EC2SubnetRouteTableAssociation{
-			RouteTableId: cft.Ref(
+			RouteTableID: cft.Ref(
 				fmt.Sprintf("NATSubnetRouteTable%d", i)).String(),
-			SubnetId: cft.Ref(
+			SubnetID: cft.Ref(
 				fmt.Sprintf("NATSubnet%d", i)).String(),
 		})
 		template.AddResource(fmt.Sprintf("NATSubnetRouteTable%d", i), &cft.EC2RouteTable{
-			VpcId: cft.Ref("VPCIDParameter").String(),
-			Tags: []cft.ResourceTag{
+			VPCID: cft.Ref("VPCIDParameter").String(),
+			Tags: &cft.TagList{
 				{
 					Key: cft.String("Name"),
 					Value: cft.String(
@@ -449,9 +449,9 @@ func (p *AWSProvider) generateTemplate(
 			}
 
 			template.AddResource(fmt.Sprintf("RouteToNAT%dz%s", i+1, cleanCidrEntry), &cft.EC2Route{
-				RouteTableId:         cft.Ref(routeTableParam).String(),
+				RouteTableID:         cft.Ref(routeTableParam).String(),
 				DestinationCidrBlock: cft.String(cidrEntry),
-				NatGatewayId: cft.Ref(fmt.Sprintf(
+				NatGatewayID: cft.Ref(fmt.Sprintf(
 					"NATGateway%d",
 					routeTableZoneIndexes[routeTableParam]+1,
 				)).String(),
