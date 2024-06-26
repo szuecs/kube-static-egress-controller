@@ -1,6 +1,7 @@
 package noop
 
 import (
+	"context"
 	"net"
 
 	log "github.com/sirupsen/logrus"
@@ -19,7 +20,7 @@ func (p NoopProvider) String() string {
 	return ProviderName
 }
 
-func (p *NoopProvider) Ensure(configs map[provider.Resource]map[string]*net.IPNet) error {
+func (p *NoopProvider) Ensure(_ context.Context, configs map[provider.Resource]map[string]*net.IPNet) error {
 	log.Infof("%s Ensure(%v)", ProviderName, configs)
 	return nil
 }

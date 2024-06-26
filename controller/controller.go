@@ -72,7 +72,7 @@ func (c *EgressController) Run(ctx context.Context) {
 
 		select {
 		case <-time.After(c.interval):
-			err := c.provider.Ensure(c.configsCache)
+			err := c.provider.Ensure(ctx, c.configsCache)
 			if err != nil {
 				log.Errorf("Failed to ensure configuration: %v", err)
 				continue
@@ -87,7 +87,7 @@ func (c *EgressController) Run(ctx context.Context) {
 				c.configsCache[config.Resource] = config.IPAddresses
 			}
 
-			err := c.provider.Ensure(c.configsCache)
+			err := c.provider.Ensure(ctx, c.configsCache)
 			if err != nil {
 				log.Errorf("Failed to ensure configuration: %v", err)
 				continue
