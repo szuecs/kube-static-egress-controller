@@ -9,16 +9,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/aws/client"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/cloudformation"
-	"github.com/aws/aws-sdk-go/service/cloudformation/cloudformationiface"
-	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/transport/http"
+	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
+	cftypes "github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 	cft "github.com/crewjam/go-cloudformation"
-	"github.com/linki/instrumented_http"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"github.com/szuecs/kube-static-egress-controller/provider"
@@ -39,12 +37,12 @@ const (
 )
 
 var (
-	errCreateFailed           = fmt.Errorf("wait for stack failed with %s", cloudformation.StackStatusCreateFailed)
-	errRollbackComplete       = fmt.Errorf("wait for stack failed with %s", cloudformation.StackStatusRollbackComplete)
-	errUpdateRollbackComplete = fmt.Errorf("wait for stack failed with %s", cloudformation.StackStatusUpdateRollbackComplete)
-	errRollbackFailed         = fmt.Errorf("wait for stack failed with %s", cloudformation.StackStatusRollbackFailed)
-	errUpdateRollbackFailed   = fmt.Errorf("wait for stack failed with %s", cloudformation.StackStatusUpdateRollbackFailed)
-	errDeleteFailed           = fmt.Errorf("wait for stack failed with %s", cloudformation.StackStatusDeleteFailed)
+	errCreateFailed           = fmt.Errorf("wait for stack failed with %s", cftypes.StackStatusCreateFailed)
+	errRollbackComplete       = fmt.Errorf("wait for stack failed with %s", cftypes.StackStatusRollbackComplete)
+	errUpdateRollbackComplete = fmt.Errorf("wait for stack failed with %s", cftypes.StackStatusUpdateRollbackComplete)
+	errRollbackFailed         = fmt.Errorf("wait for stack failed with %s", cftypes.StackStatusRollbackFailed)
+	errUpdateRollbackFailed   = fmt.Errorf("wait for stack failed with %s", cftypes.StackStatusUpdateRollbackFailed)
+	errDeleteFailed           = fmt.Errorf("wait for stack failed with %s", cftypes.StackStatusDeleteFailed)
 	errTimeoutExceeded        = fmt.Errorf("wait for stack timeout exceeded")
 )
 
@@ -56,8 +54,8 @@ type AWSProvider struct {
 	vpcID                      string
 	natCidrBlocks              []string
 	availabilityZones          []string
-	cloudformation             cloudformationiface.CloudFormationAPI
-	ec2                        ec2iface.EC2API
+	cloudformation             cloudformationAPI
+	ec2                        ec2API
 	stackTerminationProtection bool
 	additionalStackTags        map[string]string
 	logger                     *log.Entry
@@ -71,12 +69,11 @@ type stackSpec struct {
 	timeoutInMinutes           uint
 	template                   string
 	stackTerminationProtection bool
-	tags                       []*cloudformation.Tag
+	tags                       []cftypes.Tag
 }
 
-func NewAWSProvider(clusterID, controllerID string, dry bool, vpcID string, clusterIDTagPrefix string, natCidrBlocks, availabilityZones []string, stackTerminationProtection bool, additionalStackTags map[string]string) *AWSProvider {
+func NewAWSProvider(cfg aws.Config, clusterID, controllerID string, dry bool, vpcID string, clusterIDTagPrefix string, natCidrBlocks, availabilityZones []string, stackTerminationProtection bool, additionalStackTags map[string]string) (*AWSProvider, error) {
 	// TODO: find vpcID at startup
-	p := defaultConfigProvider()
 	return &AWSProvider{
 		clusterID:                  clusterID,
 		clusterIDTagPrefix:         clusterIDTagPrefix,
@@ -85,38 +82,38 @@ func NewAWSProvider(clusterID, controllerID string, dry bool, vpcID string, clus
 		vpcID:                      vpcID,
 		natCidrBlocks:              natCidrBlocks,
 		availabilityZones:          availabilityZones,
-		cloudformation:             cloudformation.New(p),
-		ec2:                        ec2.New(p),
+		cloudformation:             cloudformation.NewFromConfig(cfg),
+		ec2:                        ec2.NewFromConfig(cfg),
 		stackTerminationProtection: stackTerminationProtection,
 		additionalStackTags:        additionalStackTags,
 		logger:                     log.WithFields(log.Fields{"provider": ProviderName}),
-	}
+	}, nil
 }
 
 func (p AWSProvider) String() string {
 	return ProviderName
 }
 
-func (p *AWSProvider) Ensure(configs map[provider.Resource]map[string]*net.IPNet) error {
-	stack, err := p.getEgressStack()
+func (p *AWSProvider) Ensure(ctx context.Context, configs map[provider.Resource]map[string]*net.IPNet) error {
+	stack, err := p.getEgressStack(ctx)
 	if err != nil {
 		return err
 	}
 
 	// don't do anything if the stack doesn't exist and the config is empty
-	if len(configs) == 0 && stack == nil {
+	if len(configs) == 0 && stack.StackName == nil {
 		return nil
 	}
 
-	spec, err := p.generateStackSpec(configs)
+	spec, err := p.generateStackSpec(ctx, configs)
 	if err != nil {
 		return errors.Wrap(err, "failed to generate stack spec")
 	}
 
 	// create new stack if it doesn't already exists
-	if stack == nil {
+	if stack.StackName == nil {
 		p.logger.Infof("Creating CF stack with config: %v", configs)
-		err := p.createCFStack(spec)
+		err := p.createCFStack(ctx, spec)
 		if err != nil {
 			return errors.Wrap(err, "failed to create CF stack")
 		}
@@ -124,10 +121,10 @@ func (p *AWSProvider) Ensure(configs map[provider.Resource]map[string]*net.IPNet
 		return nil
 	}
 
-	spec.name = aws.StringValue(stack.StackName)
+	spec.name = aws.ToString(stack.StackName)
 	if len(configs) == 0 {
 		p.logger.Info("Deleting CF stack. No egress configs")
-		err := p.deleteCFStack(spec.name)
+		err := p.deleteCFStack(ctx, spec.name)
 		if err != nil {
 			return err
 		}
@@ -136,7 +133,7 @@ func (p *AWSProvider) Ensure(configs map[provider.Resource]map[string]*net.IPNet
 	}
 
 	// get stack template body
-	templateBody, err := p.getStackTemplateBody(stack)
+	templateBody, err := p.getStackTemplateBody(ctx, stack)
 	if err != nil {
 		return err
 	}
@@ -151,7 +148,7 @@ func (p *AWSProvider) Ensure(configs map[provider.Resource]map[string]*net.IPNet
 
 	// update stack with new config
 	p.logger.Infof("Updating CF stack with config: %v", configs)
-	err = p.updateCFStack(spec)
+	err = p.updateCFStack(ctx, spec)
 	if err != nil {
 		return errors.Wrap(err, "failed to update CF stack")
 	}
@@ -202,17 +199,17 @@ func getCIDRsFromTemplate(template string) map[string]struct{} {
 	return cidrs
 }
 
-func findTagByKey(tags []*ec2.Tag, key string) string {
+func findTagByKey(tags []ec2types.Tag, key string) string {
 	for _, t := range tags {
-		if aws.StringValue(t.Key) == key {
-			return aws.StringValue(t.Value)
+		if aws.ToString(t.Key) == key {
+			return aws.ToString(t.Value)
 		}
 	}
 
 	return ""
 }
 
-func (p *AWSProvider) generateStackSpec(configs map[provider.Resource]map[string]*net.IPNet) (*stackSpec, error) {
+func (p *AWSProvider) generateStackSpec(ctx context.Context, configs map[provider.Resource]map[string]*net.IPNet) (*stackSpec, error) {
 	spec := &stackSpec{
 		name:                       normalizeStackName(p.clusterID),
 		timeoutInMinutes:           10,
@@ -225,14 +222,14 @@ func (p *AWSProvider) generateStackSpec(configs map[provider.Resource]map[string
 	}
 	spec.tags = tagMapToCloudformationTags(mergeTags(p.additionalStackTags, tags))
 
-	vpcID, err := p.findVPC()
+	vpcID, err := p.findVPC(ctx)
 	if err != nil {
 		return nil, err
 	}
 	spec.vpcID = vpcID
 
 	// get assigned internet gateway
-	igw, err := p.getInternetGatewayId(spec.vpcID)
+	igw, err := p.getInternetGatewayId(ctx, spec.vpcID)
 	p.logger.Debugf("%s: igw(%d)", p, len(igw))
 	if err != nil {
 		return nil, err
@@ -243,11 +240,11 @@ func (p *AWSProvider) generateStackSpec(configs map[provider.Resource]map[string
 	}
 
 	// get first internet gateway ID
-	igwID := aws.StringValue(igw[0].InternetGatewayId)
+	igwID := aws.ToString(igw[0].InternetGatewayId)
 	spec.internetGatewayID = igwID
 
 	// get route tables
-	rt, err := p.getRouteTables(spec.vpcID)
+	rt, err := p.getRouteTables(ctx, spec.vpcID)
 	p.logger.Debugf("%s: rt(%d)", p, len(rt))
 	if err != nil {
 		return nil, err
@@ -316,7 +313,7 @@ func (p *AWSProvider) generateStackSpec(configs map[provider.Resource]map[string
 		paramName := fmt.Sprintf("AZ%dRouteTableIDParameter", i+1)
 		paramOrder = append(paramOrder, paramName)
 		tableZoneIndexes[paramName] = zindex
-		tableID[paramName] = aws.StringValue(table.RouteTableId)
+		tableID[paramName] = aws.ToString(table.RouteTableId)
 	}
 
 	spec.template = p.generateTemplate(configs, paramOrder, tableZoneIndexes)
@@ -324,10 +321,10 @@ func (p *AWSProvider) generateStackSpec(configs map[provider.Resource]map[string
 	return spec, nil
 }
 
-func routeTableZone(rt *ec2.RouteTable) (string, bool) {
+func routeTableZone(rt ec2types.RouteTable) (string, bool) {
 	for _, tag := range rt.Tags {
-		if tagDefaultAZKeyRouteTableID == aws.StringValue(tag.Key) {
-			return aws.StringValue(tag.Value), true
+		if tagDefaultAZKeyRouteTableID == aws.ToString(tag.Key) {
+			return aws.ToString(tag.Value), true
 		}
 	}
 
@@ -344,25 +341,25 @@ func zoneIndex(zones []string, zone string) (int, bool) {
 	return 0, false
 }
 
-func (p *AWSProvider) findVPC() (string, error) {
+func (p *AWSProvider) findVPC(ctx context.Context) (string, error) {
 	// provided by the user
 	if p.vpcID != "" {
 		return p.vpcID, nil
 	}
 
-	vpcs, err := p.getVpcID()
+	vpcs, err := p.getVpcID(ctx)
 	p.logger.Debugf("%s: vpcs(%d)", p, len(vpcs))
 	if err != nil {
 		return "", err
 	}
 
 	if len(vpcs) == 1 {
-		return aws.StringValue(vpcs[0].VpcId), nil
+		return aws.ToString(vpcs[0].VpcId), nil
 	}
 
 	for _, vpc := range vpcs {
-		if aws.BoolValue(vpc.IsDefault) {
-			return aws.StringValue(vpc.VpcId), nil
+		if aws.ToBool(vpc.IsDefault) {
+			return aws.ToString(vpc.VpcId), nil
 		}
 	}
 
@@ -464,16 +461,19 @@ func (p *AWSProvider) generateTemplate(
 }
 
 func isDoesNotExistsErr(err error) bool {
-	if awsErr, ok := err.(awserr.Error); ok {
-		if awsErr.Code() == "ValidationError" && strings.Contains(awsErr.Message(), "does not exist") {
-			// we wanted to delete a stack and it does not exist (or was removed while we were waiting, we can hide the error)
-			return true
+	if smithyErr, ok := err.(*smithy.OperationError); ok {
+		if respErr, ok := smithyErr.Err.(*http.ResponseError); ok {
+			if apiErr, ok := respErr.Err.(*smithy.GenericAPIError); ok {
+				if apiErr.Code == "ValidationError" && strings.Contains(apiErr.Message, "does not exist") {
+					return true
+				}
+			}
 		}
 	}
 	return false
 }
 
-func (p *AWSProvider) deleteCFStack(stackName string) error {
+func (p *AWSProvider) deleteCFStack(ctx context.Context, stackName string) error {
 	if p.dry {
 		p.logger.Debugf("%s: Stack to delete: %s", p, stackName)
 		return nil
@@ -486,14 +486,14 @@ func (p *AWSProvider) deleteCFStack(stackName string) error {
 			EnableTerminationProtection: aws.Bool(false),
 		}
 
-		_, err := p.cloudformation.UpdateTerminationProtection(termParams)
+		_, err := p.cloudformation.UpdateTerminationProtection(ctx, termParams)
 		if err != nil {
 			return err
 		}
 	}
 
 	params := &cloudformation.DeleteStackInput{StackName: aws.String(stackName)}
-	_, err := p.cloudformation.DeleteStack(params)
+	_, err := p.cloudformation.DeleteStack(ctx, params)
 	if err != nil {
 		if isDoesNotExistsErr(err) {
 			return nil
@@ -501,7 +501,7 @@ func (p *AWSProvider) deleteCFStack(stackName string) error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), maxStackWaitTimeout)
+	ctx, cancel := context.WithTimeout(ctx, maxStackWaitTimeout)
 	defer cancel()
 
 	err = p.waitForStack(ctx, stackStatusCheckInterval, stackName)
@@ -514,11 +514,11 @@ func (p *AWSProvider) deleteCFStack(stackName string) error {
 	return nil
 }
 
-func (p *AWSProvider) updateCFStack(spec *stackSpec) error {
+func (p *AWSProvider) updateCFStack(ctx context.Context, spec *stackSpec) error {
 	params := &cloudformation.UpdateStackInput{
 		StackName: aws.String(spec.name),
 		Parameters: append(
-			[]*cloudformation.Parameter{
+			[]cftypes.Parameter{
 				cfParam(parameterVPCIDParameter, spec.vpcID),
 				cfParam(parameterInternetGatewayIDParameter, spec.internetGatewayID),
 			},
@@ -536,58 +536,53 @@ func (p *AWSProvider) updateCFStack(spec *stackSpec) error {
 				EnableTerminationProtection: aws.Bool(spec.stackTerminationProtection),
 			}
 
-			_, err := p.cloudformation.UpdateTerminationProtection(termParams)
+			_, err := p.cloudformation.UpdateTerminationProtection(ctx, termParams)
 			if err != nil {
 				return err
 			}
 		}
 
-		_, err := p.cloudformation.UpdateStack(params)
+		_, err := p.cloudformation.UpdateStack(ctx, params)
 		if err != nil {
-			if awsErr, ok := err.(awserr.Error); ok {
-				if awsErr.Code() == "AlreadyExistsException" {
-					err = provider.NewAlreadyExistsError(fmt.Sprintf("%s AlreadyExists", spec.name))
-				}
+			if isDoesNotExistsErr(err) {
+				return provider.NewDoesNotExistError(fmt.Sprintf("Stack '%s' does not exist", spec.name))
 			}
 			return err
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), maxStackWaitTimeout)
+		ctx, cancel := context.WithTimeout(ctx, maxStackWaitTimeout)
 		defer cancel()
 		return p.waitForStack(ctx, stackStatusCheckInterval, spec.name)
 	}
 
-	p.logger.Debugf("%s: DRY: Stack to update: %s", p, params)
-	p.logger.Debugln(aws.StringValue(params.TemplateBody))
+	p.logger.Debugf("%s: DRY: Stack to update: %v", p, params)
+	p.logger.Debugln(aws.ToString(params.TemplateBody))
 	return nil
 }
 
-func (p *AWSProvider) createCFStack(spec *stackSpec) error {
+func (p *AWSProvider) createCFStack(ctx context.Context, spec *stackSpec) error {
 	params := &cloudformation.CreateStackInput{
 		StackName: aws.String(spec.name),
-		OnFailure: aws.String(cloudformation.OnFailureDelete),
+		OnFailure: cftypes.OnFailureDelete,
 		Parameters: append(
-			[]*cloudformation.Parameter{
+			[]cftypes.Parameter{
 				cfParam(parameterVPCIDParameter, spec.vpcID),
 				cfParam(parameterInternetGatewayIDParameter, spec.internetGatewayID),
 			},
 			routeTableParams(spec)...,
 		),
 		TemplateBody:                aws.String(spec.template),
-		TimeoutInMinutes:            aws.Int64(int64(spec.timeoutInMinutes)),
+		TimeoutInMinutes:            aws.Int32(int32(spec.timeoutInMinutes)),
 		EnableTerminationProtection: aws.Bool(spec.stackTerminationProtection),
 		Tags:                        spec.tags,
 	}
 
 	if !p.dry {
-		_, err := p.cloudformation.CreateStack(params)
+		_, err := p.cloudformation.CreateStack(ctx, params)
 		if err != nil {
-			if awsErr, ok := err.(awserr.Error); ok {
-				if strings.Contains(awsErr.Message(), "does not exist") {
-					err = provider.NewDoesNotExistError(fmt.Sprintf("%s does not exist", spec.name))
-				} else if awsErr.Code() == "AlreadyExistsException" {
-					err = provider.NewAlreadyExistsError(fmt.Sprintf("%s AlreadyExists", spec.name))
-				}
+			var aer *cftypes.AlreadyExistsException
+			if errors.As(err, &aer) {
+				err = provider.NewAlreadyExistsError(fmt.Sprintf("%s AlreadyExists", spec.name))
 			}
 			return err
 		}
@@ -595,14 +590,14 @@ func (p *AWSProvider) createCFStack(spec *stackSpec) error {
 		defer cancel()
 		return p.waitForStack(ctx, stackStatusCheckInterval, spec.name)
 	}
-	p.logger.Debugf("%s: DRY: Stack to create: %s", p, params)
-	p.logger.Debugln(aws.StringValue(params.TemplateBody))
+	p.logger.Debugf("%s: DRY: Stack to create: %v", p, params)
+	p.logger.Debugln(aws.ToString(params.TemplateBody))
 	return nil
 
 }
 
-func routeTableParams(s *stackSpec) []*cloudformation.Parameter {
-	var params []*cloudformation.Parameter
+func routeTableParams(s *stackSpec) []cftypes.Parameter {
+	var params []cftypes.Parameter
 	for paramName, routeTableID := range s.tableID {
 		params = append(params, cfParam(paramName, routeTableID))
 	}
@@ -610,72 +605,74 @@ func routeTableParams(s *stackSpec) []*cloudformation.Parameter {
 	return params
 }
 
-func (p *AWSProvider) getStackByName(stackName string) (*cloudformation.Stack, error) {
+func (p *AWSProvider) getStackByName(ctx context.Context, stackName string) (cftypes.Stack, error) {
 	params := &cloudformation.DescribeStacksInput{
 		StackName: aws.String(stackName),
 	}
-	resp, err := p.cloudformation.DescribeStacks(params)
+	resp, err := p.cloudformation.DescribeStacks(ctx, params)
 	if err != nil {
-		return nil, err
+		return cftypes.Stack{}, err
 	}
 	// we expect only one stack
 	if len(resp.Stacks) != 1 {
-		return nil, fmt.Errorf("unexpected response, got %d, expected 1 stack", len(resp.Stacks))
+		return cftypes.Stack{}, fmt.Errorf("unexpected response, got %d, expected 1 stack", len(resp.Stacks))
 	}
 	return resp.Stacks[0], nil
 }
 
 // getEgressStack gets the Egress stack by ClusterID tag or by static stack
 // name.
-func (p *AWSProvider) getEgressStack() (*cloudformation.Stack, error) {
+func (p *AWSProvider) getEgressStack(ctx context.Context) (cftypes.Stack, error) {
 	tags := map[string]string{
 		p.clusterIDTagPrefix + p.clusterID: resourceLifecycleOwned,
 		kubernetesApplicationTagKey:        p.controllerID,
 	}
 
 	params := &cloudformation.DescribeStacksInput{}
+	paginator := cloudformation.NewDescribeStacksPaginator(p.cloudformation, params)
 
-	var egressStack *cloudformation.Stack
-	err := p.cloudformation.DescribeStacksPages(params, func(resp *cloudformation.DescribeStacksOutput, lastPage bool) bool {
+	var egressStack cftypes.Stack
+	for paginator.HasMorePages() {
+		resp, err := paginator.NextPage(ctx)
+		if err != nil {
+			return cftypes.Stack{}, err
+		}
+
 		for _, stack := range resp.Stacks {
-			if cloudformationHasTags(tags, stack.Tags) || aws.StringValue(stack.StackName) == staticLagacyStackName {
+			if cloudformationHasTags(tags, stack.Tags) || aws.ToString(stack.StackName) == staticLagacyStackName {
 				egressStack = stack
-				return false
+				break
 			}
 		}
-		return true
-	})
-	if err != nil {
-		return nil, err
 	}
 
 	return egressStack, nil
 }
 
-func (p *AWSProvider) getStackTemplateBody(stack *cloudformation.Stack) (string, error) {
+func (p *AWSProvider) getStackTemplateBody(ctx context.Context, stack cftypes.Stack) (string, error) {
 	tParams := &cloudformation.GetTemplateInput{
 		StackName:     stack.StackName,
-		TemplateStage: aws.String(cloudformation.TemplateStageOriginal),
+		TemplateStage: cftypes.TemplateStageOriginal,
 	}
 
-	resp, err := p.cloudformation.GetTemplate(tParams)
+	resp, err := p.cloudformation.GetTemplate(ctx, tParams)
 	if err != nil {
 		return "", err
 	}
 
-	return aws.StringValue(resp.TemplateBody), nil
+	return aws.ToString(resp.TemplateBody), nil
 }
 
 // cloudformationHasTags returns true if the expected tags are found in the
 // tags list.
-func cloudformationHasTags(expected map[string]string, tags []*cloudformation.Tag) bool {
+func cloudformationHasTags(expected map[string]string, tags []cftypes.Tag) bool {
 	if len(expected) > len(tags) {
 		return false
 	}
 
 	tagsMap := make(map[string]string, len(tags))
 	for _, tag := range tags {
-		tagsMap[aws.StringValue(tag.Key)] = aws.StringValue(tag.Value)
+		tagsMap[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
 	}
 
 	for key, val := range expected {
@@ -688,31 +685,31 @@ func cloudformationHasTags(expected map[string]string, tags []*cloudformation.Ta
 
 func (p *AWSProvider) waitForStack(ctx context.Context, waitTime time.Duration, stackName string) error {
 	for {
-		stack, err := p.getStackByName(stackName)
+		stack, err := p.getStackByName(ctx, stackName)
 		if err != nil {
 			return err
 		}
-		switch aws.StringValue(stack.StackStatus) {
-		case cloudformation.StackStatusUpdateComplete:
+		switch stack.StackStatus {
+		case cftypes.StackStatusUpdateComplete:
 			return nil
-		case cloudformation.StackStatusCreateComplete:
+		case cftypes.StackStatusCreateComplete:
 			return nil
-		case cloudformation.StackStatusDeleteComplete:
+		case cftypes.StackStatusDeleteComplete:
 			return nil
-		case cloudformation.StackStatusCreateFailed:
+		case cftypes.StackStatusCreateFailed:
 			return errCreateFailed
-		case cloudformation.StackStatusDeleteFailed:
+		case cftypes.StackStatusDeleteFailed:
 			return errDeleteFailed
-		case cloudformation.StackStatusRollbackComplete:
+		case cftypes.StackStatusRollbackComplete:
 			return errRollbackComplete
-		case cloudformation.StackStatusRollbackFailed:
+		case cftypes.StackStatusRollbackFailed:
 			return errRollbackFailed
-		case cloudformation.StackStatusUpdateRollbackComplete:
+		case cftypes.StackStatusUpdateRollbackComplete:
 			return errUpdateRollbackComplete
-		case cloudformation.StackStatusUpdateRollbackFailed:
+		case cftypes.StackStatusUpdateRollbackFailed:
 			return errUpdateRollbackFailed
 		}
-		p.logger.Debugf("Stack '%s' - [%s]", stackName, aws.StringValue(stack.StackStatus))
+		p.logger.Debugf("Stack '%s' - [%s]", stackName, stack.StackStatus)
 
 		select {
 		case <-ctx.Done():
@@ -722,68 +719,52 @@ func (p *AWSProvider) waitForStack(ctx context.Context, waitTime time.Duration, 
 	}
 }
 
-func defaultConfigProvider() client.ConfigProvider {
-	cfg := aws.NewConfig().WithMaxRetries(3)
-	cfg = cfg.WithHTTPClient(instrumented_http.NewClient(cfg.HTTPClient, nil))
-	opts := session.Options{
-		SharedConfigState: session.SharedConfigEnable,
-		Config:            *cfg,
-	}
-	return session.Must(session.NewSessionWithOptions(opts))
-}
-
-func cfParam(key, value string) *cloudformation.Parameter {
-	return &cloudformation.Parameter{
+func cfParam(key, value string) cftypes.Parameter {
+	return cftypes.Parameter{
 		ParameterKey:   aws.String(key),
 		ParameterValue: aws.String(value),
 	}
 }
 
-func (p *AWSProvider) getInternetGatewayId(vpcID string) ([]*ec2.InternetGateway, error) {
+func (p *AWSProvider) getInternetGatewayId(ctx context.Context, vpcID string) ([]ec2types.InternetGateway, error) {
 	params := &ec2.DescribeInternetGatewaysInput{
-		Filters: []*ec2.Filter{
+		Filters: []ec2types.Filter{
 			{
-				Name: aws.String("attachment.vpc-id"),
-				Values: []*string{
-					aws.String(vpcID),
-				},
+				Name:   aws.String("attachment.vpc-id"),
+				Values: []string{vpcID},
 			},
 		},
 	}
-	resp, err := p.ec2.DescribeInternetGateways(params)
+	resp, err := p.ec2.DescribeInternetGateways(ctx, params)
 	if err != nil {
 		return nil, err
 	}
 	return resp.InternetGateways, nil
 }
 
-func (p *AWSProvider) getVpcID() ([]*ec2.Vpc, error) {
+func (p *AWSProvider) getVpcID(ctx context.Context) ([]ec2types.Vpc, error) {
 	params := &ec2.DescribeVpcsInput{}
-	resp, err := p.ec2.DescribeVpcs(params)
+	resp, err := p.ec2.DescribeVpcs(ctx, params)
 	if err != nil {
 		return nil, err
 	}
 	return resp.Vpcs, nil
 }
 
-func (p *AWSProvider) getRouteTables(vpcID string) ([]*ec2.RouteTable, error) {
+func (p *AWSProvider) getRouteTables(ctx context.Context, vpcID string) ([]ec2types.RouteTable, error) {
 	params := &ec2.DescribeRouteTablesInput{
-		Filters: []*ec2.Filter{
+		Filters: []ec2types.Filter{
 			{
-				Name: aws.String("vpc-id"),
-				Values: []*string{
-					aws.String(vpcID),
-				},
+				Name:   aws.String("vpc-id"),
+				Values: []string{vpcID},
 			},
 			{
-				Name: aws.String("tag:Type"),
-				Values: []*string{
-					aws.String(tagDefaultTypeValueRouteTableID),
-				},
+				Name:   aws.String("tag:Type"),
+				Values: []string{tagDefaultTypeValueRouteTableID},
 			},
 		},
 	}
-	resp, err := p.ec2.DescribeRouteTables(params)
+	resp, err := p.ec2.DescribeRouteTables(ctx, params)
 	if err != nil {
 		return nil, err
 	}
@@ -800,10 +781,10 @@ func mergeTags(tags ...map[string]string) map[string]string {
 	return mergedTags
 }
 
-func tagMapToCloudformationTags(tags map[string]string) []*cloudformation.Tag {
-	cfTags := make([]*cloudformation.Tag, 0, len(tags))
+func tagMapToCloudformationTags(tags map[string]string) []cftypes.Tag {
+	cfTags := make([]cftypes.Tag, 0, len(tags))
 	for k, v := range tags {
-		tag := &cloudformation.Tag{
+		tag := cftypes.Tag{
 			Key:   aws.String(k),
 			Value: aws.String(v),
 		}

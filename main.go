@@ -10,6 +10,7 @@ import (
 	"time"
 
 	kingpin "github.com/alecthomas/kingpin/v2"
+	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
 	"github.com/szuecs/kube-static-egress-controller/controller"
@@ -77,16 +78,20 @@ func NewConfig() *Config {
 	}
 }
 
-func newProvider(clusterID, controllerID string, dry bool, name, vpcID string, clusterIDTagPrefix string, natCidrBlocks, availabilityZones []string, stackTerminationProtection bool, additionalStackTags map[string]string) provider.Provider {
+func newProvider(clusterID, controllerID string, dry bool, name, vpcID string, clusterIDTagPrefix string, natCidrBlocks, availabilityZones []string, stackTerminationProtection bool, additionalStackTags map[string]string) (provider.Provider, error) {
 	switch name {
 	case aws.ProviderName:
-		return aws.NewAWSProvider(clusterID, controllerID, dry, vpcID, clusterIDTagPrefix, natCidrBlocks, availabilityZones, stackTerminationProtection, additionalStackTags)
+		cfg, err := config.LoadDefaultConfig(context.TODO())
+		if err != nil {
+			return nil, err
+		}
+		return aws.NewAWSProvider(cfg, clusterID, controllerID, dry, vpcID, clusterIDTagPrefix, natCidrBlocks, availabilityZones, stackTerminationProtection, additionalStackTags)
 	case noop.ProviderName:
-		return noop.NewNoopProvider()
+		return noop.NewNoopProvider(), nil
 	default:
-		log.Fatalf("Unkown provider: %s", name)
+		return nil, fmt.Errorf("Unkown provider: %s", name)
 	}
-	return nil
+	return nil, nil
 }
 
 func allLogLevelsAsStrings() []string {
@@ -157,7 +162,10 @@ func main() {
 	log.SetLevel(ll)
 	log.Debugf("config: %+v", cfg)
 
-	p := newProvider(cfg.ClusterID, cfg.ControllerID, cfg.DryRun, cfg.Provider, cfg.VPCID, cfg.ClusterIDTagPrefix, cfg.NatCidrBlocks, cfg.AvailabilityZones, cfg.StackTerminationProtection, cfg.AdditionalStackTags)
+	p, err := newProvider(cfg.ClusterID, cfg.ControllerID, cfg.DryRun, cfg.Provider, cfg.VPCID, cfg.ClusterIDTagPrefix, cfg.NatCidrBlocks, cfg.AvailabilityZones, cfg.StackTerminationProtection, cfg.AdditionalStackTags)
+	if err != nil {
+		log.Fatalf("Failed to create provider: %v", err)
+	}
 
 	configsChan := make(chan provider.EgressConfig)
 	cmWatcher, err := kube.NewConfigMapWatcher(newKubeClient(), cfg.Namespace, "egress=static", configsChan)

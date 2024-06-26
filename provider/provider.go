@@ -1,6 +1,9 @@
 package provider
 
-import "net"
+import (
+	"context"
+	"net"
+)
 
 type Resource struct {
 	Name      string
@@ -13,6 +16,6 @@ type EgressConfig struct {
 }
 
 type Provider interface {
-	Ensure(configs map[Resource]map[string]*net.IPNet) error
+	Ensure(ctx context.Context, configs map[Resource]map[string]*net.IPNet) error
 	String() string
 }
