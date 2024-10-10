@@ -11,10 +11,12 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/transport/http"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
 	cftypes "github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
 	cft "github.com/crewjam/go-cloudformation"
 	"github.com/pkg/errors"
@@ -52,10 +54,12 @@ type AWSProvider struct {
 	controllerID               string
 	dry                        bool
 	vpcID                      string
+	cfTemplateBucket           string
 	natCidrBlocks              []string
 	availabilityZones          []string
 	cloudformation             cloudformationAPI
 	ec2                        ec2API
+	s3Uploader                 s3UploaderAPI
 	stackTerminationProtection bool
 	additionalStackTags        map[string]string
 	logger                     *log.Entry
@@ -72,7 +76,7 @@ type stackSpec struct {
 	tags                       []cftypes.Tag
 }
 
-func NewAWSProvider(cfg aws.Config, clusterID, controllerID string, dry bool, vpcID string, clusterIDTagPrefix string, natCidrBlocks, availabilityZones []string, stackTerminationProtection bool, additionalStackTags map[string]string) (*AWSProvider, error) {
+func NewAWSProvider(cfg aws.Config, clusterID, controllerID string, dry bool, vpcID string, cfTemplateBucket string, clusterIDTagPrefix string, natCidrBlocks, availabilityZones []string, stackTerminationProtection bool, additionalStackTags map[string]string) (*AWSProvider, error) {
 	// TODO: find vpcID at startup
 	return &AWSProvider{
 		clusterID:                  clusterID,
@@ -80,10 +84,12 @@ func NewAWSProvider(cfg aws.Config, clusterID, controllerID string, dry bool, vp
 		controllerID:               controllerID,
 		dry:                        dry,
 		vpcID:                      vpcID,
+		cfTemplateBucket:           cfTemplateBucket,
 		natCidrBlocks:              natCidrBlocks,
 		availabilityZones:          availabilityZones,
 		cloudformation:             cloudformation.NewFromConfig(cfg),
 		ec2:                        ec2.NewFromConfig(cfg),
+		s3Uploader:                 manager.NewUploader(s3.NewFromConfig(cfg)),
 		stackTerminationProtection: stackTerminationProtection,
 		additionalStackTags:        additionalStackTags,
 		logger:                     log.WithFields(log.Fields{"provider": ProviderName}),
@@ -515,6 +521,20 @@ func (p *AWSProvider) deleteCFStack(ctx context.Context, stackName string) error
 }
 
 func (p *AWSProvider) updateCFStack(ctx context.Context, spec *stackSpec) error {
+	var templateURL string
+	if p.cfTemplateBucket != "" {
+		// Upload the stack template to S3
+		result, err := p.s3Uploader.Upload(ctx, &s3.PutObjectInput{
+			Bucket: aws.String(p.cfTemplateBucket),
+			Key:    aws.String(fmt.Sprintf("%s.template", spec.name)),
+			Body:   strings.NewReader(spec.template),
+		})
+		if err != nil {
+			return err
+		}
+		templateURL = result.Location
+	}
+
 	params := &cloudformation.UpdateStackInput{
 		StackName: aws.String(spec.name),
 		Parameters: append(
@@ -524,8 +544,13 @@ func (p *AWSProvider) updateCFStack(ctx context.Context, spec *stackSpec) error 
 			},
 			routeTableParams(spec)...,
 		),
-		TemplateBody: aws.String(spec.template),
-		Tags:         spec.tags,
+		Tags: spec.tags,
+	}
+
+	if templateURL != "" {
+		params.TemplateURL = aws.String(templateURL)
+	} else {
+		params.TemplateBody = aws.String(spec.template)
 	}
 
 	if !p.dry {
@@ -561,6 +586,20 @@ func (p *AWSProvider) updateCFStack(ctx context.Context, spec *stackSpec) error 
 }
 
 func (p *AWSProvider) createCFStack(ctx context.Context, spec *stackSpec) error {
+	var templateURL string
+	if p.cfTemplateBucket != "" {
+		// Upload the stack template to S3
+		result, err := p.s3Uploader.Upload(ctx, &s3.PutObjectInput{
+			Bucket: aws.String(p.cfTemplateBucket),
+			Key:    aws.String(fmt.Sprintf("%s.template", spec.name)),
+			Body:   strings.NewReader(spec.template),
+		})
+		if err != nil {
+			return err
+		}
+		templateURL = result.Location
+	}
+
 	params := &cloudformation.CreateStackInput{
 		StackName: aws.String(spec.name),
 		OnFailure: cftypes.OnFailureDelete,
@@ -571,10 +610,15 @@ func (p *AWSProvider) createCFStack(ctx context.Context, spec *stackSpec) error 
 			},
 			routeTableParams(spec)...,
 		),
-		TemplateBody:                aws.String(spec.template),
 		TimeoutInMinutes:            aws.Int32(int32(spec.timeoutInMinutes)),
 		EnableTerminationProtection: aws.Bool(spec.stackTerminationProtection),
 		Tags:                        spec.tags,
+	}
+
+	if templateURL != "" {
+		params.TemplateURL = aws.String(templateURL)
+	} else {
+		params.TemplateBody = aws.String(spec.template)
 	}
 
 	if !p.dry {

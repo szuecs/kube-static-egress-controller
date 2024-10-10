@@ -42,6 +42,7 @@ type Config struct {
 	LogLevel           string
 	Provider           string
 	VPCID              string
+	CFTemplateBucket   string
 	ClusterID          string
 	ClusterIDTagPrefix string
 	ControllerID       string
@@ -78,20 +79,19 @@ func NewConfig() *Config {
 	}
 }
 
-func newProvider(clusterID, controllerID string, dry bool, name, vpcID string, clusterIDTagPrefix string, natCidrBlocks, availabilityZones []string, stackTerminationProtection bool, additionalStackTags map[string]string) (provider.Provider, error) {
+func newProvider(clusterID, controllerID string, dry bool, name, vpcID string, cfTemplateBucket string, clusterIDTagPrefix string, natCidrBlocks, availabilityZones []string, stackTerminationProtection bool, additionalStackTags map[string]string) (provider.Provider, error) {
 	switch name {
 	case aws.ProviderName:
 		cfg, err := config.LoadDefaultConfig(context.TODO())
 		if err != nil {
 			return nil, err
 		}
-		return aws.NewAWSProvider(cfg, clusterID, controllerID, dry, vpcID, clusterIDTagPrefix, natCidrBlocks, availabilityZones, stackTerminationProtection, additionalStackTags)
+		return aws.NewAWSProvider(cfg, clusterID, controllerID, dry, vpcID, cfTemplateBucket, clusterIDTagPrefix, natCidrBlocks, availabilityZones, stackTerminationProtection, additionalStackTags)
 	case noop.ProviderName:
 		return noop.NewNoopProvider(), nil
 	default:
 		return nil, fmt.Errorf("Unkown provider: %s", name)
 	}
-	return nil, nil
 }
 
 func allLogLevelsAsStrings() []string {
@@ -125,6 +125,7 @@ Example:
 	app.Flag("cluster-id-tag-prefix", "Prefix for the Cluster ID tag set on the Egress stack.").Default(defaultConfig.ClusterIDTagPrefix).StringVar(&cfg.ClusterIDTagPrefix)
 	app.Flag("controller-id", "Controller ID used to identify ownership of Egress stack.").Default(defaultConfig.ControllerID).StringVar(&cfg.ControllerID)
 	app.Flag("vpc-id", "VPC ID (default: auto-detect)").Default(defaultConfig.VPCID).StringVar(&cfg.VPCID)
+	app.Flag("cf-template-bucket", "S3 bucket to use for CF template storage").StringVar(&cfg.CFTemplateBucket)
 	app.Flag("aws-nat-cidr-block", "AWS Provider requires to specify NAT-CIDR-Blocks for each AZ to have a NAT gateway in. Each should be a small network having only the NAT GW").StringsVar(&cfg.NatCidrBlocks)
 	app.Flag("aws-az", "AWS Provider requires to specify all AZs to have a NAT gateway in.").StringsVar(&cfg.AvailabilityZones)
 	app.Flag("stack-termination-protection", "Enables AWS clouformation stack termination protection for the stacks managed by the controller.").BoolVar(&cfg.StackTerminationProtection)
@@ -162,7 +163,7 @@ func main() {
 	log.SetLevel(ll)
 	log.Debugf("config: %+v", cfg)
 
-	p, err := newProvider(cfg.ClusterID, cfg.ControllerID, cfg.DryRun, cfg.Provider, cfg.VPCID, cfg.ClusterIDTagPrefix, cfg.NatCidrBlocks, cfg.AvailabilityZones, cfg.StackTerminationProtection, cfg.AdditionalStackTags)
+	p, err := newProvider(cfg.ClusterID, cfg.ControllerID, cfg.DryRun, cfg.Provider, cfg.VPCID, cfg.CFTemplateBucket, cfg.ClusterIDTagPrefix, cfg.NatCidrBlocks, cfg.AvailabilityZones, cfg.StackTerminationProtection, cfg.AdditionalStackTags)
 	if err != nil {
 		log.Fatalf("Failed to create provider: %v", err)
 	}
