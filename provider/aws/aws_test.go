@@ -9,10 +9,12 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
 	cftypes "github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 	"github.com/szuecs/kube-static-egress-controller/provider"
@@ -189,6 +191,7 @@ type mockCloudformation struct {
 	err          error
 	stack        cftypes.Stack
 	templateBody string
+	templateURL  string
 }
 
 func (cf *mockCloudformation) DescribeStacks(_ context.Context, input *cloudformation.DescribeStacksInput, optFns ...func(*cloudformation.Options)) (*cloudformation.DescribeStacksOutput, error) {
@@ -219,6 +222,8 @@ func (cf *mockCloudformation) CreateStack(_ context.Context, input *cloudformati
 		StackStatus: cftypes.StackStatusCreateComplete,
 		Tags:        input.Tags,
 	}
+	cf.templateBody = aws.ToString(input.TemplateBody)
+	cf.templateURL = aws.ToString(input.TemplateURL)
 	return &cloudformation.CreateStackOutput{
 		StackId: aws.String(""),
 	}, cf.err
@@ -231,6 +236,7 @@ func (cf *mockCloudformation) UpdateStack(_ context.Context, input *cloudformati
 		Tags:        input.Tags,
 	}
 	cf.templateBody = aws.ToString(input.TemplateBody)
+	cf.templateURL = aws.ToString(input.TemplateURL)
 	return &cloudformation.UpdateStackOutput{
 		StackId: aws.String(""),
 	}, cf.err
@@ -261,6 +267,14 @@ func (ec2 *mockEC2) DescribeInternetGateways(context.Context, *ec2.DescribeInter
 
 func (ec2 *mockEC2) DescribeRouteTables(context.Context, *ec2.DescribeRouteTablesInput, ...func(*ec2.Options)) (*ec2.DescribeRouteTablesOutput, error) {
 	return ec2.describeRouteTables, ec2.err
+}
+
+type mockS3UploaderAPI struct {
+	err error
+}
+
+func (s3 *mockS3UploaderAPI) Upload(ctx context.Context, input *s3.PutObjectInput, opts ...func(*manager.Uploader)) (*manager.UploadOutput, error) {
+	return &manager.UploadOutput{Location: aws.ToString(input.Bucket) + "/" + aws.ToString(input.Key)}, s3.err
 }
 
 func TestEnsure(tt *testing.T) {
@@ -550,6 +564,68 @@ func TestEnsure(tt *testing.T) {
 				}
 			} else {
 				require.Error(t, err)
+			}
+		})
+	}
+}
+
+func TestCloudformationS3TemplateUpload(t *testing.T) {
+	for _, tc := range []struct {
+		msg              string
+		cfTemplateBucket string
+		s3UploaderErr    error
+	}{
+		{
+			msg:              "when cfTemplateBucket is set it should upload",
+			cfTemplateBucket: "bucket",
+		},
+		{
+			msg:              "Fail on upload error when cfTemplateBucket is set",
+			cfTemplateBucket: "bucket",
+			s3UploaderErr:    errors.New("failed"),
+		},
+	} {
+		t.Run(tc.msg, func(t *testing.T) {
+			cloudformationAPI := &mockCloudformation{}
+
+			provider := &AWSProvider{
+				vpcID:            "x",
+				cloudformation:   cloudformationAPI,
+				s3Uploader:       &mockS3UploaderAPI{err: tc.s3UploaderErr},
+				cfTemplateBucket: tc.cfTemplateBucket,
+				logger:           log.WithFields(log.Fields{"provider": ProviderName}),
+			}
+
+			err := provider.createCFStack(context.Background(), &stackSpec{name: "stack", template: "<template>"})
+			if tc.s3UploaderErr != nil {
+				require.Error(t, err)
+				return
+			} else {
+				require.NoError(t, err)
+			}
+
+			if tc.cfTemplateBucket != "" {
+				require.NotEqual(t, cloudformationAPI.templateURL, "")
+				require.Equal(t, cloudformationAPI.templateBody, "")
+			} else {
+				require.Equal(t, cloudformationAPI.templateURL, "")
+				require.NotEqual(t, cloudformationAPI.templateBody, "")
+			}
+
+			err = provider.updateCFStack(context.Background(), &stackSpec{name: "stack", template: "<template>"})
+			if tc.s3UploaderErr != nil {
+				require.Error(t, err)
+				return
+			} else {
+				require.NoError(t, err)
+			}
+
+			if tc.cfTemplateBucket != "" {
+				require.NotEqual(t, cloudformationAPI.templateURL, "")
+				require.Equal(t, cloudformationAPI.templateBody, "")
+			} else {
+				require.Equal(t, cloudformationAPI.templateURL, "")
+				require.NotEqual(t, cloudformationAPI.templateBody, "")
 			}
 		})
 	}
