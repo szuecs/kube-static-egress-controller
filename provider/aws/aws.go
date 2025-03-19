@@ -683,7 +683,7 @@ func (p *AWSProvider) getEgressStack(ctx context.Context) (cftypes.Stack, error)
 		}
 
 		for _, stack := range resp.Stacks {
-			if cloudformationHasTags(tags, stack.Tags) || aws.ToString(stack.StackName) == staticLagacyStackName {
+			if cloudformationHasTags(tags, stack.Tags) {
 				egressStack = stack
 				break
 			}
