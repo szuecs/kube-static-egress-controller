@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path"
 	"syscall"
 	"time"
 
@@ -19,6 +18,8 @@ import (
 	"github.com/szuecs/kube-static-egress-controller/provider"
 	"github.com/szuecs/kube-static-egress-controller/provider/aws"
 	"github.com/szuecs/kube-static-egress-controller/provider/noop"
+	"github.com/zalando-build/credentials-loader/platformiam"
+	"golang.org/x/oauth2"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -202,8 +203,10 @@ func newKubeClient() kubernetes.Interface {
 		log.Fatalf("build config failed: %v", err)
 	}
 
+	platformIAMTokenSource := platformiam.NewTokenSource("kube-static-egress-controller", DefaultCredentialsDir)
+
 	platformIAMRestConfig := rest.AnonymousClientConfig(config)
-	platformIAMRestConfig.Wrap(TokenInjector(NewCredentialsDirectoryTokenSource(DefaultCredentialsDir), "kube-static-egress-controller"))
+	platformIAMRestConfig.Wrap(TokenInjector(platformIAMTokenSource))
 
 	client, err := kubernetes.NewForConfig(platformIAMRestConfig)
 	if err != nil {
@@ -251,51 +254,26 @@ const (
 // CredentialsDirEnvar   = "CREDENTIALS_DIR"
 )
 
-type TokenSource interface {
-	GetToken(id string) (string, error)
-}
-
-type CredentialsDirectoryTokenSource struct {
-	credentialsDirectory string
-}
-
-func NewCredentialsDirectoryTokenSource(credentialsDirectory string) *CredentialsDirectoryTokenSource {
-	return &CredentialsDirectoryTokenSource{
-		credentialsDirectory: credentialsDirectory,
-	}
-}
-
-func (s *CredentialsDirectoryTokenSource) GetToken(id string) (string, error) {
-	filePath := path.Join(s.credentialsDirectory, fmt.Sprintf("%s-token-secret", id))
-	contents, err := os.ReadFile(filePath)
-	if err != nil {
-		return "", err
-	}
-	return string(contents), nil
-}
-
 type kubeTokenInjector struct {
-	tokenSource TokenSource
-	tokenName   string
+	tokenSource oauth2.TokenSource
 	next        http.RoundTripper
 }
 
-func TokenInjector(tokenSource TokenSource, tokenName string) transport.WrapperFunc {
+func TokenInjector(tokenSource oauth2.TokenSource) transport.WrapperFunc {
 	return func(rt http.RoundTripper) http.RoundTripper {
 		return &kubeTokenInjector{
 			tokenSource: tokenSource,
-			tokenName:   tokenName,
 			next:        rt,
 		}
 	}
 }
 
 func (i *kubeTokenInjector) RoundTrip(request *http.Request) (*http.Response, error) {
-	token, err := i.tokenSource.GetToken(i.tokenName)
+	token, err := i.tokenSource.Token()
 	if err != nil {
 		return nil, err
 	}
 
-	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Authorization", "Bearer "+token.AccessToken)
 	return i.next.RoundTrip(request)
 }
