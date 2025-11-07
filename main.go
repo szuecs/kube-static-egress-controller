@@ -200,7 +200,7 @@ func newKubeClient(cfg *Config) kubernetes.Interface {
 		kubeconfig = clientcmd.RecommendedHomeFile
 	}
 	log.Debugf("use config file %s", kubeconfig)
-	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	config, err := clientcmd.BuildConfigFromFlags(cfg.Master, kubeconfig)
 	if err != nil {
 		log.Fatalf("build config failed: %v", err)
 	}
