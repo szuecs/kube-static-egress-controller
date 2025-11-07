@@ -36,7 +36,7 @@ var (
 )
 
 type Config struct {
-	Master             string
+	Masters            []string
 	KubeConfig         string
 	DryRun             bool
 	LogFormat          string
@@ -62,7 +62,6 @@ type Config struct {
 }
 
 var defaultConfig = &Config{
-	Master:                     "",
 	KubeConfig:                 "",
 	VPCID:                      "",
 	ClusterID:                  "",
@@ -122,7 +121,7 @@ Example:
 	app.DefaultEnvars()
 
 	// Flags related to Kubernetes
-	app.Flag("master", "The Kubernetes API server to connect to (default: auto-detect)").Default(defaultConfig.Master).StringVar(&cfg.Master)
+	app.Flag("master", "The Kubernetes API server to connect to (default: auto-detect)").Default("").StringsVar(&cfg.Masters)
 	app.Flag("kubeconfig", "Retrieve target cluster configuration from a Kubernetes configuration file (default: auto-detect)").Default(defaultConfig.KubeConfig).StringVar(&cfg.KubeConfig)
 	app.Flag("use-platform-credentials", "Use Platform credentials (default: disabled)").BoolVar(&cfg.UsePlatformCredentials)
 	app.Flag("credentials-dir", "Directory where the Platform credentials are stored (default: /meta/credentials)").Default(auth.DefaultCredentialsDir).Envar(auth.CredentialsDirEnvar).StringVar(&cfg.CredentialsDir)
@@ -175,7 +174,7 @@ func main() {
 	}
 
 	configsChan := make(chan provider.EgressConfig)
-	cmWatcher, err := kube.NewConfigMapWatcher(newKubeClient(cfg), cfg.Namespace, "egress=static", configsChan)
+	cmWatcher, err := kube.NewConfigMapWatcher(newKubeClients(cfg), cfg.Namespace, "egress=static", configsChan)
 	if err != nil {
 		log.Fatalf("Failed to setup ConfigMap watcher: %v", err)
 	}
@@ -193,14 +192,23 @@ func main() {
 	controller.Run(ctx)
 }
 
-// newKubeClient returns a new Kubernetes client with the default config.
-func newKubeClient(cfg *Config) kubernetes.Interface {
+// newKubeClients returns multiple Kubernetes clients with the given config.
+func newKubeClients(cfg *Config) []kubernetes.Interface {
 	var kubeconfig string
 	if _, err := os.Stat(clientcmd.RecommendedHomeFile); err == nil {
 		kubeconfig = clientcmd.RecommendedHomeFile
 	}
 	log.Debugf("use config file %s", kubeconfig)
-	config, err := clientcmd.BuildConfigFromFlags(cfg.Master, kubeconfig)
+	var clients []kubernetes.Interface
+	for _, master := range cfg.Masters {
+		clients = append(clients, newKubeClient(cfg, master, kubeconfig))
+	}
+	return clients
+}
+
+// newKubeClient returns a new Kubernetes client with the given config.
+func newKubeClient(cfg *Config, master, kubeconfig string) kubernetes.Interface {
+	config, err := clientcmd.BuildConfigFromFlags(master, kubeconfig)
 	if err != nil {
 		log.Fatalf("build config failed: %v", err)
 	}
