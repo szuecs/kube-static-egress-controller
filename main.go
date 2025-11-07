@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
+	"github.com/szuecs/kube-static-egress-controller/auth"
 	"github.com/szuecs/kube-static-egress-controller/controller"
 	"github.com/szuecs/kube-static-egress-controller/kube"
 	"github.com/szuecs/kube-static-egress-controller/provider"
@@ -55,6 +56,9 @@ type Config struct {
 	Namespace                  string
 	ResyncInterval             time.Duration
 	Address                    string
+	// required by Platform credentials
+	UsePlatformCredentials bool
+	CredentialsDir         string
 }
 
 var defaultConfig = &Config{
@@ -120,6 +124,8 @@ Example:
 	// Flags related to Kubernetes
 	app.Flag("master", "The Kubernetes API server to connect to (default: auto-detect)").Default(defaultConfig.Master).StringVar(&cfg.Master)
 	app.Flag("kubeconfig", "Retrieve target cluster configuration from a Kubernetes configuration file (default: auto-detect)").Default(defaultConfig.KubeConfig).StringVar(&cfg.KubeConfig)
+	app.Flag("use-platform-credentials", "Use Platform credentials (default: disabled)").BoolVar(&cfg.UsePlatformCredentials)
+	app.Flag("credentials-dir", "Directory where the Platform credentials are stored (default: /meta/credentials)").Default(auth.DefaultCredentialsDir).Envar(auth.CredentialsDirEnvar).StringVar(&cfg.CredentialsDir)
 	app.Flag("provider", "Provider implementing static egress <noop|aws> (default: auto-detect)").Default(defaultConfig.Provider).StringVar(&cfg.Provider)
 	app.Flag("cluster-id", "Cluster ID used define ownership of Egress stack.").StringVar(&cfg.ClusterID)
 	app.Flag("cluster-id-tag-prefix", "Prefix for the Cluster ID tag set on the Egress stack.").Default(defaultConfig.ClusterIDTagPrefix).StringVar(&cfg.ClusterIDTagPrefix)
@@ -169,7 +175,7 @@ func main() {
 	}
 
 	configsChan := make(chan provider.EgressConfig)
-	cmWatcher, err := kube.NewConfigMapWatcher(newKubeClient(), cfg.Namespace, "egress=static", configsChan)
+	cmWatcher, err := kube.NewConfigMapWatcher(newKubeClient(cfg), cfg.Namespace, "egress=static", configsChan)
 	if err != nil {
 		log.Fatalf("Failed to setup ConfigMap watcher: %v", err)
 	}
@@ -188,7 +194,7 @@ func main() {
 }
 
 // newKubeClient returns a new Kubernetes client with the default config.
-func newKubeClient() kubernetes.Interface {
+func newKubeClient(cfg *Config) kubernetes.Interface {
 	var kubeconfig string
 	if _, err := os.Stat(clientcmd.RecommendedHomeFile); err == nil {
 		kubeconfig = clientcmd.RecommendedHomeFile
@@ -197,6 +203,10 @@ func newKubeClient() kubernetes.Interface {
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		log.Fatalf("build config failed: %v", err)
+	}
+
+	if cfg.UsePlatformCredentials {
+		config.Wrap(auth.TokenInjector(auth.NewPlatformCredentialsTokenSource(name, cfg.CredentialsDir)))
 	}
 
 	client, err := kubernetes.NewForConfig(config)
