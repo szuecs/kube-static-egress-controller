@@ -16,20 +16,20 @@ import (
 )
 
 type ConfigMapWatcher struct {
-	client    kubernetes.Interface
+	clients   []kubernetes.Interface
 	namespace string
 	selector  fields.Selector
 	configs   chan provider.EgressConfig
 }
 
-func NewConfigMapWatcher(client kubernetes.Interface, namespace, selectorStr string, configs chan provider.EgressConfig) (*ConfigMapWatcher, error) {
+func NewConfigMapWatcher(clients []kubernetes.Interface, namespace, selectorStr string, configs chan provider.EgressConfig) (*ConfigMapWatcher, error) {
 	selector, err := fields.ParseSelector(selectorStr)
 	if err != nil {
 		return nil, err
 	}
 
 	return &ConfigMapWatcher{
-		client:    client,
+		clients:   clients,
 		namespace: namespace,
 		selector:  selector,
 		configs:   configs,
@@ -37,15 +37,21 @@ func NewConfigMapWatcher(client kubernetes.Interface, namespace, selectorStr str
 }
 
 func (c *ConfigMapWatcher) Run(ctx context.Context) {
+	for _, client := range c.clients {
+		c.runForClient(ctx, client)
+	}
+}
+
+func (c *ConfigMapWatcher) runForClient(ctx context.Context, client kubernetes.Interface) {
 	informer := cache.NewSharedIndexInformer(
 		&cache.ListWatch{
 			ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
 				options.LabelSelector = c.selector.String()
-				return c.client.CoreV1().ConfigMaps(c.namespace).List(ctx, options)
+				return client.CoreV1().ConfigMaps(c.namespace).List(ctx, options)
 			},
 			WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
 				options.LabelSelector = c.selector.String()
-				return c.client.CoreV1().ConfigMaps(c.namespace).Watch(ctx, options)
+				return client.CoreV1().ConfigMaps(c.namespace).Watch(ctx, options)
 			},
 		},
 		&v1.ConfigMap{},
@@ -105,11 +111,23 @@ func (c *ConfigMapWatcher) del(obj interface{}) {
 }
 
 func (c *ConfigMapWatcher) ListConfigs(ctx context.Context) ([]provider.EgressConfig, error) {
+	egressConfigs := []provider.EgressConfig{}
+	for _, client := range c.clients {
+		configs, err := c.listConfigsForClient(ctx, client)
+		if err != nil {
+			return nil, err
+		}
+		egressConfigs = append(egressConfigs, configs...)
+	}
+	return egressConfigs, nil
+}
+
+func (c *ConfigMapWatcher) listConfigsForClient(ctx context.Context, client kubernetes.Interface) ([]provider.EgressConfig, error) {
 	opts := metav1.ListOptions{
 		LabelSelector: c.selector.String(),
 	}
 
-	configMaps, err := c.client.CoreV1().ConfigMaps(c.namespace).List(ctx, opts)
+	configMaps, err := client.CoreV1().ConfigMaps(c.namespace).List(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
