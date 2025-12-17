@@ -67,27 +67,12 @@ func (c *EgressController) Run(ctx context.Context) {
 					c.configsCache[config.Resource] = config.IPAddresses
 				}
 			}
-
-			err = c.provider.Ensure(ctx, c.configsCache)
-			if err != nil {
-				log.Errorf("Failed to ensure configuration: %v", err)
-				continue
-			}
-			// successfully synced
-			lastSyncTimestamp.SetToCurrentTime()
-
-			continue
+			ensureEgressRules(ctx, c.provider, c.configsCache)
 		}
 
 		select {
 		case <-time.After(c.interval):
-			err := c.provider.Ensure(ctx, c.configsCache)
-			if err != nil {
-				log.Errorf("Failed to ensure configuration: %v", err)
-				continue
-			}
-			// successfully synced
-			lastSyncTimestamp.SetToCurrentTime()
+			ensureEgressRules(ctx, c.provider, c.configsCache)
 		case config := <-c.configSource.Config():
 			if len(config.IPAddresses) == 0 {
 				delete(c.configsCache, config.Resource)
@@ -96,16 +81,20 @@ func (c *EgressController) Run(ctx context.Context) {
 				c.configsCache[config.Resource] = config.IPAddresses
 			}
 
-			err := c.provider.Ensure(ctx, c.configsCache)
-			if err != nil {
-				log.Errorf("Failed to ensure configuration: %v", err)
-				continue
-			}
-			// successfully synced
-			lastSyncTimestamp.SetToCurrentTime()
+			ensureEgressRules(ctx, c.provider, c.configsCache)
 		case <-ctx.Done():
 			log.Info("Terminating controller loop.")
 			return
 		}
 	}
+}
+
+func ensureEgressRules(ctx context.Context, prov provider.Provider, configsCache map[provider.Resource]map[string]*net.IPNet) {
+	err := prov.Ensure(ctx, configsCache)
+	if err != nil {
+		log.Errorf("Failed to ensure configuration: %v", err)
+		return
+	}
+	// successfully synced
+	lastSyncTimestamp.SetToCurrentTime()
 }
