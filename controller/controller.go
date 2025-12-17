@@ -53,23 +53,23 @@ func (c *EgressController) Run(ctx context.Context) {
 	log.Info("Running controller")
 
 	for {
-		if !c.cacheInitialized {
-			configs, err := c.configSource.ListConfigs(ctx)
-			if err != nil {
-				log.Errorf("Failed to list Egress configurations: %v", err)
-				time.Sleep(3 * time.Second)
-				continue
-			}
-
-			c.cacheInitialized = true
-			for _, config := range configs {
-				if len(config.IPAddresses) > 0 {
-					c.configsCache[config.Resource] = config.IPAddresses
-				}
-			}
-			ensureEgressRules(ctx, c.provider, c.configsCache)
+		configs, err := c.configSource.ListConfigs(ctx)
+		if err != nil {
+			log.Errorf("Failed to list Egress configurations: %v", err)
+			time.Sleep(3 * time.Second)
+			continue // retry
 		}
 
+		for _, config := range configs {
+			if len(config.IPAddresses) > 0 {
+				c.configsCache[config.Resource] = config.IPAddresses
+			}
+		}
+		ensureEgressRules(ctx, c.provider, c.configsCache)
+		break // successfully initialized cache, move on
+	}
+
+	for {
 		select {
 		case <-time.After(c.interval):
 			ensureEgressRules(ctx, c.provider, c.configsCache)
@@ -80,7 +80,6 @@ func (c *EgressController) Run(ctx context.Context) {
 				log.Infof("Observed IP Addresses %v for %v", config.IPAddresses, config.Resource)
 				c.configsCache[config.Resource] = config.IPAddresses
 			}
-
 			ensureEgressRules(ctx, c.provider, c.configsCache)
 		case <-ctx.Done():
 			log.Info("Terminating controller loop.")
