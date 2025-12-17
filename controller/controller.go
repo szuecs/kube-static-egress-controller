@@ -31,11 +31,10 @@ type EgressConfigSource interface {
 // EgressController is the controller for creating Egress configuration via a
 // provider.
 type EgressController struct {
-	interval         time.Duration
-	configSource     EgressConfigSource
-	configsCache     map[provider.Resource]map[string]*net.IPNet
-	provider         provider.Provider
-	cacheInitialized bool
+	interval     time.Duration
+	configSource EgressConfigSource
+	configsCache map[provider.Resource]map[string]*net.IPNet
+	provider     provider.Provider
 }
 
 // NewEgressController initializes a new EgressController.
