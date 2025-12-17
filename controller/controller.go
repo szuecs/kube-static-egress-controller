@@ -67,6 +67,15 @@ func (c *EgressController) Run(ctx context.Context) {
 					c.configsCache[config.Resource] = config.IPAddresses
 				}
 			}
+
+			err = c.provider.Ensure(ctx, c.configsCache)
+			if err != nil {
+				log.Errorf("Failed to ensure configuration: %v", err)
+				continue
+			}
+			// successfully synced
+			lastSyncTimestamp.SetToCurrentTime()
+
 			continue
 		}
 
