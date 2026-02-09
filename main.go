@@ -36,7 +36,7 @@ var (
 )
 
 type Config struct {
-	Masters            map[string]string
+	Masters            []string
 	KubeConfig         string
 	DryRun             bool
 	LogFormat          string
@@ -120,11 +120,8 @@ Example:
 	app.Version(version + "\nbuild time: " + buildstamp + "\nGit ref: " + githash)
 	app.DefaultEnvars()
 
-	// initialize Masters map to avoid nil map assignment
-	cfg.Masters = make(map[string]string)
-
 	// Flags related to Kubernetes
-	app.Flag("master", "The Kubernetes API server to connect to (default: auto-detect)").Default("").StringMapVar(&cfg.Masters)
+	app.Flag("master", "The Kubernetes API server to connect to (default: auto-detect)").Default("").StringsVar(&cfg.Masters)
 	app.Flag("kubeconfig", "Retrieve target cluster configuration from a Kubernetes configuration file (default: auto-detect)").Default(defaultConfig.KubeConfig).StringVar(&cfg.KubeConfig)
 	app.Flag("use-platform-credentials", "Use Platform credentials (default: disabled)").BoolVar(&cfg.UsePlatformCredentials)
 	app.Flag("credentials-dir", "Directory where the Platform credentials are stored (default: /meta/credentials)").Default(auth.DefaultCredentialsDir).Envar(auth.CredentialsDirEnvar).StringVar(&cfg.CredentialsDir)
@@ -203,8 +200,8 @@ func newKubeClients(cfg *Config) map[string]kubernetes.Interface {
 	}
 	log.Debugf("use config file %s", kubeconfig)
 	clients := map[string]kubernetes.Interface{}
-	for cluster, master := range cfg.Masters {
-		clients[cluster] = newKubeClient(cfg, master, kubeconfig)
+	for _, master := range cfg.Masters {
+		clients[master] = newKubeClient(cfg, master, kubeconfig)
 	}
 	return clients
 }
