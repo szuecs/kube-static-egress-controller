@@ -120,6 +120,9 @@ Example:
 	app.Version(version + "\nbuild time: " + buildstamp + "\nGit ref: " + githash)
 	app.DefaultEnvars()
 
+	// initialize Masters map to avoid nil map assignment
+	cfg.Masters = make(map[string]string)
+
 	// Flags related to Kubernetes
 	app.Flag("master", "The Kubernetes API server to connect to (default: auto-detect)").Default("").StringMapVar(&cfg.Masters)
 	app.Flag("kubeconfig", "Retrieve target cluster configuration from a Kubernetes configuration file (default: auto-detect)").Default(defaultConfig.KubeConfig).StringVar(&cfg.KubeConfig)
@@ -199,7 +202,7 @@ func newKubeClients(cfg *Config) map[string]kubernetes.Interface {
 		kubeconfig = clientcmd.RecommendedHomeFile
 	}
 	log.Debugf("use config file %s", kubeconfig)
-	var clients map[string]kubernetes.Interface
+	clients := map[string]kubernetes.Interface{}
 	for cluster, master := range cfg.Masters {
 		clients[cluster] = newKubeClient(cfg, master, kubeconfig)
 	}
