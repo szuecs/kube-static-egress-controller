@@ -73,6 +73,7 @@ func TestGenerateStackSpec(t *testing.T) {
 		{
 			Name:      "x",
 			Namespace: "y",
+			Cluster:   "m",
 		}: {
 			netA.String(): netA,
 		},
@@ -158,6 +159,7 @@ func TestGenerateTemplate(t *testing.T) {
 		{
 			Name:      "x",
 			Namespace: "y",
+			Cluster:   "m",
 		}: {
 			netA.String(): netA,
 		},
@@ -325,6 +327,7 @@ func TestEnsure(tt *testing.T) {
 				{
 					Name:      "a",
 					Namespace: "x",
+					Cluster:   "m",
 				}: {
 					netA.String(): netA,
 				},
@@ -431,6 +434,7 @@ func TestEnsure(tt *testing.T) {
 				{
 					Name:      "a",
 					Namespace: "x",
+					Cluster:   "m",
 				}: {
 					netA.String(): netA,
 					netB.String(): netB,
@@ -499,6 +503,7 @@ func TestEnsure(tt *testing.T) {
 				{
 					Name:      "a",
 					Namespace: "x",
+					Cluster:   "m",
 				}: {
 					netA.String(): netA,
 					netB.String(): netB,
