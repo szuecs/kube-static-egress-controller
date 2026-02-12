@@ -23,6 +23,7 @@ func TestGenerateRoutes(tt *testing.T) {
 				{
 					Name:      "a",
 					Namespace: "x",
+					Cluster:   "m",
 				}: {
 					netA.String(): netA,
 					netB.String(): netB,
@@ -38,6 +39,7 @@ func TestGenerateRoutes(tt *testing.T) {
 				{
 					Name:      "a",
 					Namespace: "x",
+					Cluster:   "m",
 				}: {
 					netA.String(): netA,
 					netB.String(): netB,

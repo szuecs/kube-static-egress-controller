@@ -33,6 +33,7 @@ func TestControllerRun(t *testing.T) {
 				Resource: provider.Resource{
 					Name:      "a",
 					Namespace: "y",
+					Cluster:   "m",
 				},
 				IPAddresses: map[string]*net.IPNet{
 					netA.String(): netA,
@@ -55,6 +56,7 @@ func TestControllerRun(t *testing.T) {
 	require.Contains(t, controller.configsCache, provider.Resource{
 		Name:      "a",
 		Namespace: "y",
+		Cluster:   "m",
 	})
 
 	// test adding the an egress config.
@@ -65,6 +67,7 @@ func TestControllerRun(t *testing.T) {
 			Resource: provider.Resource{
 				Name:      "a",
 				Namespace: "x",
+				Cluster:   "m",
 			},
 			IPAddresses: map[string]*net.IPNet{
 				netA.String(): netA,
@@ -78,6 +81,7 @@ func TestControllerRun(t *testing.T) {
 	require.Contains(t, controller.configsCache, provider.Resource{
 		Name:      "a",
 		Namespace: "x",
+		Cluster:   "m",
 	})
 
 	// test removing the config
@@ -88,6 +92,7 @@ func TestControllerRun(t *testing.T) {
 			Resource: provider.Resource{
 				Name:      "a",
 				Namespace: "x",
+				Cluster:   "m",
 			},
 		}
 		cancel()

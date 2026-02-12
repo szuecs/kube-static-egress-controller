@@ -16,13 +16,18 @@ import (
 )
 
 type ConfigMapWatcher struct {
-	clients   []kubernetes.Interface
+	clients   map[string]kubernetes.Interface
 	namespace string
 	selector  fields.Selector
 	configs   chan provider.EgressConfig
 }
 
-func NewConfigMapWatcher(clients []kubernetes.Interface, namespace, selectorStr string, configs chan provider.EgressConfig) (*ConfigMapWatcher, error) {
+type EventHandler struct {
+	cluster string
+	configs chan provider.EgressConfig
+}
+
+func NewConfigMapWatcher(clients map[string]kubernetes.Interface, namespace, selectorStr string, configs chan provider.EgressConfig) (*ConfigMapWatcher, error) {
 	selector, err := fields.ParseSelector(selectorStr)
 	if err != nil {
 		return nil, err
@@ -37,12 +42,12 @@ func NewConfigMapWatcher(clients []kubernetes.Interface, namespace, selectorStr 
 }
 
 func (c *ConfigMapWatcher) Run(ctx context.Context) {
-	for _, client := range c.clients {
-		c.runForClient(ctx, client)
+	for cluster, client := range c.clients {
+		c.runForClient(ctx, client, cluster)
 	}
 }
 
-func (c *ConfigMapWatcher) runForClient(ctx context.Context, client kubernetes.Interface) {
+func (c *ConfigMapWatcher) runForClient(ctx context.Context, client kubernetes.Interface, cluster string) {
 	informer := cache.NewSharedIndexInformer(
 		&cache.ListWatch{
 			ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
@@ -59,10 +64,9 @@ func (c *ConfigMapWatcher) runForClient(ctx context.Context, client kubernetes.I
 		cache.Indexers{},
 	)
 
-	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    c.add,
-		UpdateFunc: c.update,
-		DeleteFunc: c.del,
+	informer.AddEventHandler(&EventHandler{
+		cluster: cluster,
+		configs: c.configs,
 	})
 
 	go informer.Run(ctx.Done())
@@ -75,45 +79,46 @@ func (c *ConfigMapWatcher) runForClient(ctx context.Context, client kubernetes.I
 	log.Info("Synced ConfigMap watcher")
 }
 
-func (c *ConfigMapWatcher) add(obj interface{}) {
+func (h *EventHandler) OnAdd(obj interface{}, _ bool) {
 	cm, ok := obj.(*v1.ConfigMap)
 	if !ok {
 		log.Errorf("Failed to get ConfigMap object")
 		return
 	}
 
-	c.configs <- configMapToEgressConfig(cm)
+	h.configs <- configMapToEgressConfig(cm, h.cluster)
 }
 
-func (c *ConfigMapWatcher) update(oldObj, newObj interface{}) {
+func (h *EventHandler) OnUpdate(oldObj, newObj interface{}) {
 	newCM, ok := newObj.(*v1.ConfigMap)
 	if !ok {
 		log.Errorf("Failed to get new ConfigMap object")
 		return
 	}
 
-	c.configs <- configMapToEgressConfig(newCM)
+	h.configs <- configMapToEgressConfig(newCM, h.cluster)
 }
 
-func (c *ConfigMapWatcher) del(obj interface{}) {
+func (h *EventHandler) OnDelete(obj interface{}) {
 	cm, ok := obj.(*v1.ConfigMap)
 	if !ok {
 		log.Errorf("Failed to get ConfigMap object")
 		return
 	}
 
-	c.configs <- provider.EgressConfig{
+	h.configs <- provider.EgressConfig{
 		Resource: provider.Resource{
 			Name:      cm.Name,
 			Namespace: cm.Namespace,
+			Cluster:   h.cluster,
 		},
 	}
 }
 
 func (c *ConfigMapWatcher) ListConfigs(ctx context.Context) ([]provider.EgressConfig, error) {
 	egressConfigs := []provider.EgressConfig{}
-	for _, client := range c.clients {
-		configs, err := c.listConfigsForClient(ctx, client)
+	for cluster, client := range c.clients {
+		configs, err := c.listConfigsForClient(ctx, client, cluster)
 		if err != nil {
 			return nil, err
 		}
@@ -122,7 +127,7 @@ func (c *ConfigMapWatcher) ListConfigs(ctx context.Context) ([]provider.EgressCo
 	return egressConfigs, nil
 }
 
-func (c *ConfigMapWatcher) listConfigsForClient(ctx context.Context, client kubernetes.Interface) ([]provider.EgressConfig, error) {
+func (c *ConfigMapWatcher) listConfigsForClient(ctx context.Context, client kubernetes.Interface, cluster string) ([]provider.EgressConfig, error) {
 	opts := metav1.ListOptions{
 		LabelSelector: c.selector.String(),
 	}
@@ -134,7 +139,7 @@ func (c *ConfigMapWatcher) listConfigsForClient(ctx context.Context, client kube
 
 	configs := make([]provider.EgressConfig, 0, len(configMaps.Items))
 	for _, cm := range configMaps.Items {
-		configs = append(configs, configMapToEgressConfig(&cm))
+		configs = append(configs, configMapToEgressConfig(&cm, cluster))
 	}
 	return configs, nil
 }
@@ -143,7 +148,7 @@ func (c *ConfigMapWatcher) Config() <-chan provider.EgressConfig {
 	return c.configs
 }
 
-func configMapToEgressConfig(cm *v1.ConfigMap) provider.EgressConfig {
+func configMapToEgressConfig(cm *v1.ConfigMap, cluster string) provider.EgressConfig {
 	ipAddresses := make(map[string]*net.IPNet)
 	for key, cidr := range cm.Data {
 		_, ipnet, err := net.ParseCIDR(cidr)
@@ -158,6 +163,7 @@ func configMapToEgressConfig(cm *v1.ConfigMap) provider.EgressConfig {
 		Resource: provider.Resource{
 			Name:      cm.Name,
 			Namespace: cm.Namespace,
+			Cluster:   cluster,
 		},
 		IPAddresses: ipAddresses,
 	}

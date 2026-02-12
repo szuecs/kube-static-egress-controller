@@ -193,15 +193,15 @@ func main() {
 }
 
 // newKubeClients returns multiple Kubernetes clients with the given config.
-func newKubeClients(cfg *Config) []kubernetes.Interface {
+func newKubeClients(cfg *Config) map[string]kubernetes.Interface {
 	var kubeconfig string
 	if _, err := os.Stat(clientcmd.RecommendedHomeFile); err == nil {
 		kubeconfig = clientcmd.RecommendedHomeFile
 	}
 	log.Debugf("use config file %s", kubeconfig)
-	var clients []kubernetes.Interface
+	clients := map[string]kubernetes.Interface{}
 	for _, master := range cfg.Masters {
-		clients = append(clients, newKubeClient(cfg, master, kubeconfig))
+		clients[master] = newKubeClient(cfg, master, kubeconfig)
 	}
 	return clients
 }

@@ -8,6 +8,7 @@ import (
 type Resource struct {
 	Name      string
 	Namespace string
+	Cluster   string
 }
 
 type EgressConfig struct {
