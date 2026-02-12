@@ -22,6 +22,11 @@ type ConfigMapWatcher struct {
 	configs   chan provider.EgressConfig
 }
 
+type EventHandler struct {
+	cluster string
+	configs chan provider.EgressConfig
+}
+
 func NewConfigMapWatcher(clients map[string]kubernetes.Interface, namespace, selectorStr string, configs chan provider.EgressConfig) (*ConfigMapWatcher, error) {
 	selector, err := fields.ParseSelector(selectorStr)
 	if err != nil {
@@ -59,10 +64,9 @@ func (c *ConfigMapWatcher) runForClient(ctx context.Context, client kubernetes.I
 		cache.Indexers{},
 	)
 
-	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    c.add(cluster),
-		UpdateFunc: c.update(cluster),
-		DeleteFunc: c.del(cluster),
+	informer.AddEventHandler(&EventHandler{
+		cluster: cluster,
+		configs: c.configs,
 	})
 
 	go informer.Run(ctx.Done())
@@ -75,45 +79,39 @@ func (c *ConfigMapWatcher) runForClient(ctx context.Context, client kubernetes.I
 	log.Info("Synced ConfigMap watcher")
 }
 
-func (c *ConfigMapWatcher) add(cluster string) func(obj interface{}) {
-	return func(obj interface{}) {
-		cm, ok := obj.(*v1.ConfigMap)
-		if !ok {
-			log.Errorf("Failed to get ConfigMap object")
-			return
-		}
-
-		c.configs <- configMapToEgressConfig(cm, cluster)
+func (h *EventHandler) OnAdd(obj interface{}, _ bool) {
+	cm, ok := obj.(*v1.ConfigMap)
+	if !ok {
+		log.Errorf("Failed to get ConfigMap object")
+		return
 	}
+
+	h.configs <- configMapToEgressConfig(cm, h.cluster)
 }
 
-func (c *ConfigMapWatcher) update(cluster string) func(oldObj, newObj interface{}) {
-	return func(oldObj, newObj interface{}) {
-		newCM, ok := newObj.(*v1.ConfigMap)
-		if !ok {
-			log.Errorf("Failed to get new ConfigMap object")
-			return
-		}
-
-		c.configs <- configMapToEgressConfig(newCM, cluster)
+func (h *EventHandler) OnUpdate(oldObj, newObj interface{}) {
+	newCM, ok := newObj.(*v1.ConfigMap)
+	if !ok {
+		log.Errorf("Failed to get new ConfigMap object")
+		return
 	}
+
+	h.configs <- configMapToEgressConfig(newCM, h.cluster)
 }
 
-func (c *ConfigMapWatcher) del(cluster string) func(obj interface{}) {
-	return func(obj interface{}) {
-		cm, ok := obj.(*v1.ConfigMap)
-		if !ok {
-			log.Errorf("Failed to get ConfigMap object")
-			return
-		}
+func (h *EventHandler) OnDelete(obj interface{}) {
+	cm, ok := obj.(*v1.ConfigMap)
+	if !ok {
+		log.Errorf("Failed to get ConfigMap object")
+		return
+	}
 
-		c.configs <- provider.EgressConfig{
-			Resource: provider.Resource{
-				Name:      cm.Name,
-				Namespace: cm.Namespace,
-				Cluster:   cluster,
-			},
-		}
+	h.configs <- provider.EgressConfig{
+		Resource: provider.Resource{
+			Name:      cm.Name,
+			Namespace: cm.Namespace,
+			Cluster:   h.cluster,
+		},
 	}
 }
 
