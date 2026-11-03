@@ -9,7 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.33.13
 	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.23.19
 	github.com/aws/aws-sdk-go-v2/service/cloudformation v1.82.3
-	github.com/aws/aws-sdk-go-v2/service/ec2 v1.323.0
+	github.com/aws/aws-sdk-go-v2/service/ec2 v1.343.0
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.6
 	github.com/aws/smithy-go v1.28.7
 	github.com/crewjam/go-cloudformation v0.0.0-20180605015303-38e5b663797c
