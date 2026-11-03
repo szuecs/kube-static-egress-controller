@@ -11,7 +11,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/cloudformation v1.76.5
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.323.0
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.107.4
-	github.com/aws/smithy-go v1.28.0
+	github.com/aws/smithy-go v1.28.7
 	github.com/crewjam/go-cloudformation v0.0.0-20180605015303-38e5b663797c
 	github.com/google/uuid v1.6.0
 	github.com/pkg/errors v0.9.1
